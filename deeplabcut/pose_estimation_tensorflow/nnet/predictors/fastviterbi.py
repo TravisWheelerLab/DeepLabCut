@@ -32,8 +32,9 @@ class FastViterbi(Predictor):
         super().__init__(bodyparts, num_outputs, num_frames, settings, video_metadata)
 
         # Store bodyparts and num_frames for later use, they become useful
-        self._bodyparts = bodyparts
         self._num_frames = num_frames
+        # Indexing if there are multiple outputs per body part
+        self._bp_lookups_scmap = [bpindex for bpindex in range(len(bodyparts)) for __ in range(num_outputs)]
 
         # Will hold the viterbi frames on the forward compute...
         # Dimension are: Frame -> Bodypart * 2 -> (y, x), (probability, loc_off_x, loc_off_y, old probability)
@@ -72,9 +73,9 @@ class FastViterbi(Predictor):
         self.NEG_NORM_DIST = None # To be computed below....
         self.NEG_AMPLITUDE = settings["negative_impact_factor"] # Negative amplitude to use for 2D negation gaussian
 
-        # Used for keeping track of the last n - 1 bodypart, used for bodypart negation during forward compute
+        # Used for keeping track of the last n - 1 bodypart, used for bodypart negation during forward compute(NOT DONE)
         if(self.NEGATE_ON):
-            self._bp_stack = deque(maxlen=len(bodyparts) - 1)
+            self._bp_stack = deque(maxlen=(len(bodyparts) * num_outputs) - 1)
 
     def _gaussian_formula(self, prior_x: float, x: float, prior_y: float, y: float) -> float:
         """
@@ -123,9 +124,6 @@ class FastViterbi(Predictor):
             for x in range(width + 2):
                 self._gaussian_table[y, x] = self._gaussian_formula(0, x, 0, y)
 
-        # Done, return...
-        return
-
 
     def _compute_neg_gaussian_table(self, width: int, height: int) -> None:
         """
@@ -141,9 +139,6 @@ class FastViterbi(Predictor):
         for y in range(height):
             for x in range(width):
                 self._neg_gaussian_table[y, x] = self._neg_gaussian_formula(0, x, 0, y)
-
-        # Done
-        return
 
 
     def _compute_edge_coordinates(self, width: int, height: int, num_of_blocks: int):
@@ -198,45 +193,45 @@ class FastViterbi(Predictor):
         return self._gaussian_table[delta_y.flatten(), delta_x.flatten()].reshape(delta_y.shape)
 
 
-    def _compute_init_frame(self, bodypart: int, frame: int, scmap: TrackingData):
+    def _compute_init_frame(self, srcmp_bp: int, out_bp: int, frame: int, scmap: TrackingData):
         """ Inserts the initial frame, or first frame to have actual points that are above the threshold. """
         # Get coordinates for all above threshold probabilities in this frame...
-        coords = np.nonzero(scmap.get_prob_table(frame, bodypart) > self.THRESHOLD)
+        coords = np.nonzero(scmap.get_prob_table(frame, srcmp_bp) > self.THRESHOLD)
 
         # Set initial value for edge values...
-        self._edge_vals[self._current_frame, bodypart, :] = self._edge_block_value
+        self._edge_vals[self._current_frame, out_bp, :] = self._edge_block_value
 
         # If no points are found above the threshold, frame for this bodypart is a dud, set it to none...
         if (len(coords[0]) == 0):
-            self._viterbi_frames[self._current_frame][bodypart * 2] = None
-            self._viterbi_frames[self._current_frame][(bodypart * 2) + 1] = None
+            self._viterbi_frames[self._current_frame][out_bp * 2] = None
+            self._viterbi_frames[self._current_frame][(out_bp * 2) + 1] = None
             return
 
         # Set first attribute for this bodypart to the y, x coordinates element wise.
-        self._viterbi_frames[self._current_frame][bodypart * 2] = np.transpose(coords)
+        self._viterbi_frames[self._current_frame][out_bp * 2] = np.transpose(coords)
 
         # Get the probabilities and offsets of the first frame and store them...
-        prob = scmap.get_prob_table(frame, bodypart)[coords] * (1 - self.EDGE_PROB)
+        prob = scmap.get_prob_table(frame, srcmp_bp)[coords] * (1 - self.EDGE_PROB)
         off_x, off_y = np.zeros(np.array(coords).shape) if(scmap.get_offset_map() is None) else np.transpose(
-                       scmap.get_offset_map()[frame, coords[0], coords[1], bodypart])
-        self._viterbi_frames[self._current_frame][(bodypart * 2) + 1] = np.transpose((prob, off_x, off_y))
+                       scmap.get_offset_map()[frame, coords[0], coords[1], srcmp_bp])
+        self._viterbi_frames[self._current_frame][(out_bp * 2) + 1] = np.transpose((prob, off_x, off_y))
 
 
-    def _compute_normal_frame(self, bodypart: int, frame: int, scmap: TrackingData):
+    def _compute_normal_frame(self, srcmp_bp: int, out_bp: int, frame: int, scmap: TrackingData):
         """ Computes and inserts a frame that has occurred after the first data-full frame. """
         # Get coordinates for all above threshold probabilities in this frame...
-        coords = np.nonzero(scmap.get_prob_table(frame, bodypart) > self.THRESHOLD)
+        coords = np.nonzero(scmap.get_prob_table(frame, srcmp_bp) > self.THRESHOLD)
 
         # SPECIAL CASE: NO IN-FRAME VITERBI VALUES THAT MAKE IT ABOVE THRESHOLD...
         if (len(coords[0]) == 0):
             # In this special case, we just copy the prior frame data...
-            self._edge_vals[self._current_frame, bodypart, :] = self._edge_vals[self._current_frame - 1, bodypart, :]
+            self._edge_vals[self._current_frame, out_bp, :] = self._edge_vals[self._current_frame - 1, out_bp, :]
 
-            self._viterbi_frames[self._current_frame][bodypart * 2] = (
-                np.copy(self._viterbi_frames[self._current_frame - 1][bodypart * 2])
+            self._viterbi_frames[self._current_frame][out_bp * 2] = (
+                np.copy(self._viterbi_frames[self._current_frame - 1][out_bp * 2])
             )
-            self._viterbi_frames[self._current_frame][(bodypart * 2) + 1] = (
-                np.copy(self._viterbi_frames[self._current_frame - 1][bodypart * 2 + 1])
+            self._viterbi_frames[self._current_frame][(out_bp * 2) + 1] = (
+                np.copy(self._viterbi_frames[self._current_frame - 1][out_bp * 2 + 1])
             )
             return
 
@@ -244,20 +239,20 @@ class FastViterbi(Predictor):
 
         # Get the x and y locations for the points in this frame and the prior frame...
         cy, cx = coords
-        py, px = self._viterbi_frames[self._current_frame - 1][bodypart * 2].transpose()
+        py, px = self._viterbi_frames[self._current_frame - 1][out_bp * 2].transpose()
 
         # Get offset values
         off_x, off_y = np.zeros(np.array(coords).shape) if(scmap.get_offset_map() is None) else np.transpose(
-                       scmap.get_offset_map()[frame, coords[0], coords[1], bodypart])
+                       scmap.get_offset_map()[frame, coords[0], coords[1], srcmp_bp])
         # Grab current non-viterbi probabilities...
-        current_prob = scmap.get_prob_table(frame, bodypart)[coords] * (1 - self.EDGE_PROB)
+        current_prob = scmap.get_prob_table(frame, srcmp_bp)[coords] * (1 - self.EDGE_PROB)
         # Grab the prior viterbi probabilities
-        prior_vit_probs = self._viterbi_frames[self._current_frame - 1][(bodypart * 2) + 1][:, 0]
+        prior_vit_probs = self._viterbi_frames[self._current_frame - 1][(out_bp * 2) + 1][:, 0]
 
 
         # Get all of the same data for the edge values...
         edge_x, edge_y = self._edge_coords[:, 0], self._edge_coords[:, 1]
-        prior_edge_probs = self._edge_vals[self._current_frame - 1, bodypart, :]
+        prior_edge_probs = self._edge_vals[self._current_frame - 1, out_bp, :]
         current_edge_probs = np.array([self._edge_block_value] * (self.BLOCKS_PER_EDGE * 4))
 
         # COMPUTE IN-FRAME VITERBI VALUES:
@@ -298,22 +293,22 @@ class FastViterbi(Predictor):
 
         if (len(coords[0]) == 0):
             # In this special case, we just copy the prior frame data...
-            self._edge_vals[self._current_frame, bodypart, :] = self._edge_vals[self._current_frame - 1, bodypart, :]
+            self._edge_vals[self._current_frame, out_bp, :] = self._edge_vals[self._current_frame - 1, out_bp, :]
 
-            self._viterbi_frames[self._current_frame][bodypart * 2] = (
-                np.copy(self._viterbi_frames[self._current_frame - 1][bodypart * 2])
+            self._viterbi_frames[self._current_frame][out_bp * 2] = (
+                np.copy(self._viterbi_frames[self._current_frame - 1][out_bp * 2])
             )
-            self._viterbi_frames[self._current_frame][(bodypart * 2) + 1] = (
-                np.copy(self._viterbi_frames[self._current_frame - 1][bodypart * 2 + 1])
+            self._viterbi_frames[self._current_frame][(out_bp * 2) + 1] = (
+                np.copy(self._viterbi_frames[self._current_frame - 1][out_bp * 2 + 1])
             )
             return
 
         # Set coordinates for this frame
-        self._viterbi_frames[self._current_frame][bodypart * 2] = np.transpose(coords)
+        self._viterbi_frames[self._current_frame][out_bp * 2] = np.transpose(coords)
 
         # SAVE NEW VITERBI FRAMES:
-        self._edge_vals[self._current_frame, bodypart] = edge_vit_vals
-        self._viterbi_frames[self._current_frame][bodypart * 2 + 1] = np.transpose((viterbi_vals, off_x, off_y))
+        self._edge_vals[self._current_frame, out_bp] = edge_vit_vals
+        self._viterbi_frames[self._current_frame][out_bp * 2 + 1] = np.transpose((viterbi_vals, off_x, off_y))
 
 
 
@@ -324,7 +319,7 @@ class FastViterbi(Predictor):
             # Precompute gaussian...
             self._compute_gaussian_table(scmap.get_frame_width(), scmap.get_frame_height())
             # Create empty python list for first frame.
-            self._viterbi_frames[self._current_frame] = [None] * (len(self._bodyparts) * 2)
+            self._viterbi_frames[self._current_frame] = [None] * (len(self._bp_lookups_scmap) * 2)
             # Set down scaling.
             self._down_scaling = scmap.get_down_scaling()
 
@@ -338,10 +333,10 @@ class FastViterbi(Predictor):
 
             # Create off edge point table of gaussian values for off-edge/on-edge transitions...
             self._compute_edge_coordinates(scmap.get_frame_width(), scmap.get_frame_height(), self.BLOCKS_PER_EDGE)
-            self._edge_vals = np.zeros((self._num_frames, len(self._bodyparts), self.BLOCKS_PER_EDGE * 4), dtype="float32")
+            self._edge_vals = np.zeros((self._num_frames, len(self._bp_lookups_scmap), self.BLOCKS_PER_EDGE * 4), dtype="float32")
 
-            for bp in range(scmap.get_bodypart_count()):
-                self._compute_init_frame(bp, 0, scmap)
+            for out_bp, srcmp_bp in enumerate(self._bp_lookups_scmap):
+                self._compute_init_frame(srcmp_bp, out_bp, 0, scmap)
 
             # Remove first frame from source map, so we can compute the rest as normal...
             scmap.set_source_map(scmap.get_source_map()[1:])
@@ -351,16 +346,16 @@ class FastViterbi(Predictor):
         for frame in range(scmap.get_frame_count()):
 
             # Create a frame...
-            self._viterbi_frames[self._current_frame] = [None] * (len(self._bodyparts) * 2)
+            self._viterbi_frames[self._current_frame] = [None] * (len(self._bp_lookups_scmap) * 2)
 
-            for bp in range(scmap.get_bodypart_count()):
+            for out_bp, srcmp_bp in enumerate(self._bp_lookups_scmap):
                 # If the prior frame was a dud frame and all frames before it where dud frames, try initializing
                 # on this frame... Note in a dud frame all points are below threshold...
-                if(self._viterbi_frames[self._current_frame - 1][bp * 2] is None):
-                    self._compute_init_frame(bp, frame, scmap)
+                if(self._viterbi_frames[self._current_frame - 1][out_bp * 2] is None):
+                    self._compute_init_frame(srcmp_bp, out_bp, frame, scmap)
                 # Otherwise we can do full viterbi on this frame...
                 else:
-                    self._compute_normal_frame(bp, frame, scmap)
+                    self._compute_normal_frame(srcmp_bp, out_bp, frame, scmap)
 
             # Increment frame counter
             self._current_frame += 1
@@ -369,7 +364,8 @@ class FastViterbi(Predictor):
         return None
 
 
-    def _get_prior_location(self, prior_frame: List[Union[ndarray, None]], prior_edge_probs: ndarray, current_point: Tuple[int, int, float]) -> Union[Tuple[bool, int, Tuple[int, int, float]], Tuple[None, None, None]]:
+    def _get_prior_location(self, prior_frame: List[Union[ndarray, None]], prior_edge_probs: ndarray,
+                            current_point: Tuple[int, int, float]) -> Union[Tuple[bool, int, Tuple[int, int, float]], Tuple[None, None, None]]:
         """
         Performs the viterbi back computation, given prior frame and current predicted point,
         returns the predicted point for this frame... (for single bodypart...)
@@ -412,14 +408,14 @@ class FastViterbi(Predictor):
         # Counter to keep track of current frame...
         r_counter = self._num_frames - 1
         # To eventually store all poses
-        all_poses = Pose.empty_pose(self._num_frames, len(self._bodyparts))
+        all_poses = Pose.empty_pose(self._num_frames, len(self._bp_lookups_scmap))
         # Points of the 'prior' frame (really the current frame)
         prior_points: List[Tuple[int, int, float]] = []
         # Keeps track last body part count - 1 body parts...
-        bp_queue = deque(maxlen=(len(self._bodyparts) - 1))
+        bp_queue = deque(maxlen=(len(self._bp_lookups_scmap) - 1))
 
         # Initial frame...
-        for bp in range(len(self._bodyparts)):
+        for bp in range(len(self._bp_lookups_scmap)):
             # If point data is None, throw error because entire video has no plotting data then...
             # This should never happen....
             if(self._viterbi_frames[r_counter][(bp * 2)] is None):
@@ -472,9 +468,9 @@ class FastViterbi(Predictor):
         # Entering main loop...
         while(r_counter >= 0):
             # Create a variable to store current points, which will eventually become the prior points...
-            current_points: List[Tuple[int, int, float]] = []
+            current_points: List[Tuple[Union[None, int], Union[None, int], Union[None, float]]] = []
 
-            for bp in range(len(self._bodyparts)):
+            for bp in range(len(self._bp_lookups_scmap)):
                 # Run single step of backtrack....
                 viterbi_data = self._viterbi_frames[r_counter][bp * 2 + 1][:]
                 coord_y, coord_x = self._viterbi_frames[r_counter][bp * 2][:].transpose()
@@ -600,5 +596,5 @@ class FastViterbi(Predictor):
 
     @classmethod
     def supports_multi_output(cls) -> bool:
-        return False
+        return True
 
