@@ -643,7 +643,7 @@ def AnalyzeVideo(video, DLCscorer, DLCscorerlegacy, trainFraction, cfg, dlc_cfg,
     if notanalyzed:
         print("Loading ", video)
         cap=cv2.VideoCapture(video)
-
+        
         if get_nframesfrommetadata:
             nframes = int(cap.get(7))
         else: #actually decode and check
@@ -655,7 +655,7 @@ def AnalyzeVideo(video, DLCscorer, DLCscorerlegacy, trainFraction, cfg, dlc_cfg,
         fps = cap.get(5) # https://docs.opencv.org/2.4/modules/highgui/doc/reading_and_writing_images_and_video.html#videocapture-get
         duration=nframes * 1. / fps
         size=(int(cap.get(4)), int(cap.get(3)))
-        
+
         ny,nx=size
         print("Duration of video [s]: ", round(duration, 2), ", recorded with ", round(fps, 2),"fps!")
         print("Overall # of frames: ", nframes," found with (before cropping) frame dimensions: ", nx, ny)
