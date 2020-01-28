@@ -63,20 +63,18 @@ class FastViterbi(Predictor):
         self.NORM_DIST = None # To be computed below...
         self.AMPLITUDE = settings["amplitude"]  # The amplitude, or height of the gaussian curve
         self.LOWEST_VAL = settings["lowest_gaussian_value"]  # Changes the lowest value that the gaussian curve can produce
-        self.THRESHOLD = settings["threshold"] # The threshold for the matrix... Everything below this value is ignored.
-        self.EDGE_PROB = settings["edge_probability"] # DLC "Predicted" going off screen probability.
-        self.BLOCKS_PER_EDGE = settings["edge_blocks_per_side"] # Number of blocks to allocate per edge....
-        self._edge_block_value = self.EDGE_PROB / (self.BLOCKS_PER_EDGE * 4) # Probability value for every block...
+        self.THRESHOLD = settings["threshold"]  # The threshold for the matrix... Everything below this value is ignored.
+        self.EDGE_PROB = settings["edge_probability"]  # DLC "Predicted" going off screen probability.
+        self.BLOCKS_PER_EDGE = settings["edge_blocks_per_side"]  # Number of blocks to allocate per edge....
+        self._edge_block_value = self.EDGE_PROB / (self.BLOCKS_PER_EDGE * 4)  # Probability value for every block...
 
         # More global variables, can also be set in dlc_config...
-        self.NEGATE_ON = settings["negate_overlapping_predictions"] # Enables prior body part negation...
-        self.NEG_NORM_DIST_UNSCALED = settings["negative_impact_distance"] # Normal distribution of negative 2D gaussian curve
-        self.NEG_NORM_DIST = None # To be computed below....
-        self.NEG_AMPLITUDE = settings["negative_impact_factor"] # Negative amplitude to use for 2D negation gaussian
-
-        # Used for keeping track of the last n - 1 bodypart, used for bodypart negation during forward compute(NOT DONE)
-        if(self.NEGATE_ON):
-            self._bp_stack = deque(maxlen=(len(bodyparts) * num_outputs) - 1)
+        self.NEGATE_ON = settings["negate_overlapping_predictions"]  # Enables prior body part negation...
+        self.NEG_NORM_DIST_UNSCALED = settings["negative_impact_distance"]  # Normal distribution of negative 2D gaussian curve
+        self.NEG_NORM_DIST = None  # To be computed below....
+        self.NEG_AMPLITUDE = settings["negative_impact_factor"]  # Negative amplitude to use for 2D negation gaussian
+        self.NEG_CURVE_TYPE = settings["negation_curve"] == "Gaussian"
+        
 
     def _gaussian_formula(self, prior_x: float, x: float, prior_y: float, y: float) -> float:
         """
@@ -96,7 +94,7 @@ class FastViterbi(Predictor):
 
     def _neg_gaussian_formula(self, prior_x: float, x: float, prior_y: float, y: float) -> float:
         """
-        Private method, computes location of point (x, y) on a inverted gaussian curve given a prior point
+        Private method, computes location of point (x, y) on a inverted gaussian (or quartic) curve given a prior point
         (x_prior, y_prior) to use as the center.
 
         :param prior_x: The x point in the prior frame
@@ -105,10 +103,17 @@ class FastViterbi(Predictor):
         :param y: The current frame's y point
         :return: The location of x, y given inverted gaussian curve (1 - curve) centered at x_prior, y_prior
         """
-        # Formula for 2D inverted gaussian curve (or dip)
-        inner_x_delta = ((prior_x - x) ** 2) / (2 * self.NEG_NORM_DIST ** 2)
-        inner_y_delta = ((prior_y - y) ** 2) / (2 * self.NEG_NORM_DIST ** 2)
-        return 1 - (self.NEG_AMPLITUDE * np.exp(-(inner_x_delta + inner_y_delta)))
+        if(self.NEG_CURVE_TYPE):
+            # Formula for 2D inverted gaussian curve (or dip)
+            inner_x_delta = ((prior_x - x) ** 2) / (2 * self.NEG_NORM_DIST ** 2)
+            inner_y_delta = ((prior_y - y) ** 2) / (2 * self.NEG_NORM_DIST ** 2)
+            return 1 - (self.NEG_AMPLITUDE * np.exp(-(inner_x_delta + inner_y_delta)))
+        else:
+            # Formula for quartic negation curve, gives much steeper sides and longer sustained peek...
+            quad_function = max(0.0, (0.5 - ((x / self.NEG_NORM_DIST) ** 4)) + (0.5 - ((y / self.NEG_NORM_DIST) ** 4)))
+            return 1 - (self.NEG_AMPLITUDE * quad_function)
+
+
 
     def _compute_gaussian_table(self, width: int, height: int) -> None:
         """
@@ -549,7 +554,9 @@ class FastViterbi(Predictor):
             ("negative_impact_factor", "The height of the upside down 2D gaussian curve used for negating locations"
                                        "of prior predicted body parts.", 0.99),
             ("negative_impact_distance", "The normal distribution of the 2D gaussian curve used for negating locations"
-                                         "of prior predicted body parts.", 0.5)
+                                         "of prior predicted body parts.", 2),
+            ("negation_curve", "Curve to be used for body part negation. Options are 'Gaussian' and 'Quartic'.",
+             "Quartic")
         ]
 
     @staticmethod
@@ -585,7 +592,7 @@ class FastViterbi(Predictor):
 
         # Make the predictor...
         predictor = cls(["part1"], 1, track_data.get_frame_count(),
-                        {name:val for name, desc, val in cls.get_settings()}, None)
+                        {name: val for name, desc, val in cls.get_settings()}, None)
 
         # Pass it data...
         predictor.on_frames(track_data)
