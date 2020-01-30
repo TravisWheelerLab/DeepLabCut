@@ -35,7 +35,6 @@ class FastViterbi(Predictor):
         # Indexing if there are multiple outputs per body part
         self._num_outputs = num_outputs
         self._total_bp_count = len(bodyparts) * num_outputs
-        # self._bp_lookups_scmap = [bpindex for bpindex in range(len(bodyparts)) for __ in range(num_outputs)]
 
         # Will hold the viterbi frames on the forward compute...
         # Dimension are: Frame -> Bodypart * 2 -> (y, x), (probability, loc_off_x, loc_off_y, old probability)
