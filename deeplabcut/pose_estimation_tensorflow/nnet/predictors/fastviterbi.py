@@ -91,6 +91,7 @@ class FastViterbi(Predictor):
         inner_y_delta = ((prior_y - y) ** 2) / (2 * self.NORM_DIST ** 2)
         return self.AMPLITUDE * np.exp(-(inner_x_delta + inner_y_delta)) + self.LOWEST_VAL
 
+
     def _neg_gaussian_formula(self, prior_x: float, x: float, prior_y: float, y: float) -> float:
         """
         Private method, computes location of point (x, y) on a inverted gaussian (or quartic) curve given a prior point
@@ -111,7 +112,6 @@ class FastViterbi(Predictor):
             # Formula for quartic negation curve, gives much steeper sides and longer sustained peek...
             quad_function = max(0.0, (0.5 - ((x / self.NEG_NORM_DIST) ** 4)) + (0.5 - ((y / self.NEG_NORM_DIST) ** 4)))
             return 1 - (self.NEG_AMPLITUDE * quad_function)
-
 
 
     def _compute_gaussian_table(self, width: int, height: int) -> None:
@@ -313,7 +313,6 @@ class FastViterbi(Predictor):
         # SAVE NEW VITERBI FRAMES:
         self._edge_vals[self._current_frame, out_bp] = edge_vit_vals
         self._viterbi_frames[self._current_frame][out_bp * 2 + 1] = np.transpose((viterbi_vals, off_x, off_y))
-
 
 
     def on_frames(self, scmap: TrackingData) -> Union[None, Pose]:
