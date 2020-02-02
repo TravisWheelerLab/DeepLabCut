@@ -550,9 +550,9 @@ class FastViterbi(Predictor):
             ("negate_overlapping_predictions", "If enabled, predictor will discourage a bodypart from being in the same"
                                                "location as prior predicted body parts.", True),
             ("negative_impact_factor", "The height of the upside down 2D gaussian curve used for negating locations"
-                                       "of prior predicted body parts.", 0.50),
+                                       "of prior predicted body parts.", 1),
             ("negative_impact_distance", "The normal distribution of the 2D gaussian curve used for negating locations"
-                                         "of prior predicted body parts.", 0.5),
+                                         "of prior predicted body parts.", 1),
             ("negation_curve", "Curve to be used for body part negation. Options are 'Gaussian' and 'Quartic'.",
              "Quartic")
         ]
