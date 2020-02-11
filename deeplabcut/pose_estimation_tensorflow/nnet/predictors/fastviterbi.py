@@ -476,6 +476,14 @@ class FastViterbi(Predictor):
             current_points: List[Tuple[Union[None, int], Union[None, int], Union[None, float]]] = []
 
             for bp in range(self._total_bp_count):
+                # If this point is None, we add a dud prediction, and continue, as all the rest will be None
+                if(self._viterbi_frames[r_counter][bp * 2] is None):
+                    all_poses.set_at(r_counter, bp, (-1, -1), (0, 0), 0, 1)
+                    current_points.append((None, None, None))
+                    if(self.NEGATE_ON):
+                        bp_queue.append((None, None, None))
+                    continue
+
                 # Run single step of backtrack....
                 viterbi_data = self._viterbi_frames[r_counter][bp * 2 + 1][:]
                 coord_y, coord_x = self._viterbi_frames[r_counter][bp * 2][:].transpose()
