@@ -1,5 +1,5 @@
 # For types in methods
-from typing import Union, List, Tuple, Any, Dict, Callable
+from typing import Union, List, Tuple, Any, Dict, Callable, Optional
 from numpy import ndarray
 import tqdm
 
@@ -14,6 +14,148 @@ from collections import deque
 
 # TODO: Add more test methods, disable numpy warnings....
 # TODO: Add Concept of being "In the Ground..."
+# TODO: SparseTrackingData class
+# Represents an valid numpy indexing type.
+Indexer = Union[slice, int, List[int], Tuple[int], None]
+
+class SparseTrackingData:
+    """
+    Represents sparse tracking data. Includes probabilities, offsets, and x/y coordinates in the probability map.
+    """
+
+    class NumpyAccessor:
+        """
+        A numpy accessor class, allows for controlled access to a numpy array (Disables direct assignment).
+        """
+        def __init__(self, src_arr: ndarray, pre_index: Tuple[Indexer] = None):
+            self._src_arr = src_arr
+            self._pre_idx = pre_index if(pre_index is not None) else tuple()
+
+        def __getitem__(self, *index: Indexer):
+            if (self._pre_idx is None):
+                return self._src_arr[index]
+            return self._src_arr[self._pre_idx + index]
+
+        def __setitem__(self, *index: Indexer, value: ndarray):
+            self._src_arr[self._pre_idx + index] = value
+
+    def __init__(self):
+        """
+        Makes a new tracking data with all empty fields.
+        """
+        self._coords = None
+        self._offsets_probs = None
+        self._coords_access = None
+        self._off_access = None
+        self._prob_access = None
+
+    @property
+    def coords(self):
+        """
+        The coordinates of this SparceTrackingData in [y, x] order.
+        """
+        return self._coords_access
+
+    @property
+    def probs(self):
+        """
+        The probabilities of this SparceTrackingData.
+        """
+        return self._prob_access
+
+    @property
+    def offsets(self):
+        """
+        The offsets of this SparceTrackingData.
+        """
+        return self._off_access
+
+    def _set_data(self, coords: ndarray, offsets: ndarray, probs: ndarray):
+        # If no coordinates are passed, set everything to None as there is no data.
+        if(len(coords) == 0):
+            self._coords = None
+            self._coords_access = None
+            self._offsets_probs = None
+            self._off_access = None
+            self._prob_access = None
+            return
+        # Combine offsets and probabilities into one numpy array...
+        offsets_plus_probs = np.concatenate(np.transpose(probs[None]), offsets, axis=1)
+
+        if((len(offsets_plus_probs.shape) != 2) and offsets_plus_probs.shape[1] == 3):
+            raise ValueError("Offset/Probability array must be n by 3...")
+
+        if(len(coords.shape) != 2 or coords.shape[0] != offsets_plus_probs.shape[0] or coords.shape[1] != 2):
+            raise ValueError("Coordinate array must be n by 2...")
+
+        # Set the arrays to the data an make new numpy accessors which point to the new numpy arrays
+        self._coords = coords
+        self._coords_access = self.NumpyAccessor(self._coords)
+        self._offsets_probs = offsets_plus_probs
+        self._off_access = self.NumpyAccessor(self._offsets_probs, (slice(1, 3),))
+        self._prob_access = self.NumpyAccessor(self._offsets_probs, (0,))
+
+    def pack(self, y_coords: Optional[ndarray], x_coords: Optional[ndarray], probs: Optional[ndarray],
+             x_offset: Optional[ndarray], y_offset: Optional[ndarray]):
+        """
+        Pack the passed data into this SparceTrackingData object.
+
+        :param y_coords: Y coordinate value of each probability within the probability map.
+        :param x_coords: X coordinate value of each probability within the probability map.
+        :param probs: The probabilities of the probability frame.
+        :param x_offset: The x offset coordinate values within the original video.
+        :param y_offset: The y offset coordinate values within the original video.
+        """
+        self._set_data(np.transpose((y_coords, x_coords)), np.transpose((x_offset, y_offset)), probs)
+
+    # noinspection PyTypeChecker
+    def unpack(self) -> Tuple[Optional[ndarray], Optional[ndarray], Optional[ndarray], Optional[ndarray], Optional[ndarray]]:
+        """
+        Return all fields of this SparseTrackingData
+
+        :return: A tuple of 1 dimensional numpy arrays, being: (y_coord, x_coord, probs, x_offset, y_offset)
+        """
+        if(self._coords is None):
+            return (None, None, None, None, None)
+
+        return tuple(np.transpose(self._coords)) + tuple(np.transpose(self._offsets_probs))
+
+    def duplicate(self) -> "SparseTrackingData":
+        """
+        Creates a copy this SparseTrackingData, returning it.
+
+        :return: A new SparseTrackingData, which is identical to the current SparseTrackingData.
+        """
+        new_sparse_data = SparseTrackingData()
+        new_sparse_data.pack(*(np.copy(arr) for arr in self.unpack()))
+
+
+    @classmethod
+    def sparsify(cls, track_data: TrackingData, frame: int, bodypart: int, threshold: float) -> "SparseTrackingData":
+        """
+        Sparcify the TrackingData.
+
+        :param track_data: The TrackingData to sparcify
+        :param frame: The frame of the TrackingData to sparcify
+        :param bodypart: The bodypart of the TrackingData to sparcify
+        :param threshold: The threshold to use when scarifying. All values below the threshold are removed.
+        :return: A new SparceTrackingData object containing the data of the TrackingData object.
+        """
+        new_sparse_data = cls()
+
+        y, x = np.nonzero(track_data.get_prob_table(frame, bodypart) > threshold)
+
+        if(track_data.get_offset_map() is None):
+            x_off, y_off = np.zeros(x.shape, dtype=np.float32), np.zeros(y.shape, dtype=np.float32)
+        else:
+            x_off, y_off = track_data.get_offset_map()[frame, y, x, bodypart]
+
+        probs = track_data.get_prob_table(frame, bodypart)[y, x]
+
+        new_sparse_data.pack(y, x, probs, x_off, y_off)
+
+        return new_sparse_data
+
 
 class FastViterbi(Predictor):
     """
@@ -36,10 +178,11 @@ class FastViterbi(Predictor):
         self._num_outputs = num_outputs
         self._total_bp_count = len(bodyparts) * num_outputs
 
+        # Holds the original TrackingData in a sparse format using the SparseTrackingData specified above.
+        self._sparse_data: List[List[SparseTrackingData]] = [None] * num_frames
         # Will hold the viterbi frames on the forward compute...
-        # Dimension are: Frame -> Bodypart * 2 -> (y, x), (probability, loc_off_x, loc_off_y, old probability)
-        # The x, y are split from other values because they are integers while others are floats...
-        self._viterbi_frames: List[List[Union[ndarray, None]]] = [None] * num_frames
+        # Dimension are: Frame -> Bodypart -> (Viterbi probability).
+        self._viterbi_probs: List[List[Union[ndarray, None]]] = [None] * num_frames
 
         # Stashes edge to edge probabilities, in the form delta-edge-index -> gaussian...
         self._edge_edge_table: ndarray = None
@@ -198,61 +341,49 @@ class FastViterbi(Predictor):
         return self._gaussian_table[delta_y.flatten(), delta_x.flatten()].reshape(delta_y.shape)
 
 
-    def _compute_init_frame(self, srcmp_bp: int, out_bp: int, frame: int, scmap: TrackingData):
+    def _sparcify_and_store(self, srcmp_bp: int, out_bp: int, frame: int, scmap: TrackingData):
+        """ Sparsifies the tracking data and then stores it in self._sparse_data so that it can be used by the Viterbi
+            algorithm later and repeatedly... """
+        self._sparse_data[frame][out_bp] = SparseTrackingData.sparsify(scmap, frame, srcmp_bp, self.THRESHOLD)
+
+
+    def _compute_init_frame(self, out_bp: int, frame: int):
         """ Inserts the initial frame, or first frame to have actual points that are above the threshold. """
         # Get coordinates for all above threshold probabilities in this frame...
-        coords = np.nonzero(scmap.get_prob_table(frame, srcmp_bp) > self.THRESHOLD)
+        y, x, probs, x_off, y_off = self._sparse_data[frame][out_bp].unpack()
 
         # Set initial value for edge values...
         self._edge_vals[self._current_frame, out_bp, :] = self._edge_block_value
 
         # If no points are found above the threshold, frame for this bodypart is a dud, set it to none...
-        if (len(coords[0]) == 0):
-            self._viterbi_frames[self._current_frame][out_bp * 2] = None
-            self._viterbi_frames[self._current_frame][(out_bp * 2) + 1] = None
+        if (y is None):
+            self._viterbi_probs[frame][out_bp] = None
             return
 
         # Set first attribute for this bodypart to the y, x coordinates element wise.
-        self._viterbi_frames[self._current_frame][out_bp * 2] = np.transpose(coords)
-
-        # Get the probabilities and offsets of the first frame and store them...
-        prob = scmap.get_prob_table(frame, srcmp_bp)[coords] * (1 - self.EDGE_PROB)
-        off_x, off_y = np.zeros(np.array(coords).shape) if(scmap.get_offset_map() is None) else np.transpose(
-                       scmap.get_offset_map()[frame, coords[0], coords[1], srcmp_bp])
-        self._viterbi_frames[self._current_frame][(out_bp * 2) + 1] = np.transpose((prob, off_x, off_y))
+        self._viterbi_probs[frame][out_bp] = probs * (1 - self.EDGE_PROB)
 
 
-    def _compute_normal_frame(self, srcmp_bp: int, out_bp: int, frame: int, scmap: TrackingData):
+    def _compute_normal_frame(self, out_bp: int, frame: int):
         """ Computes and inserts a frame that has occurred after the first data-full frame. """
         # Get coordinates for all above threshold probabilities in this frame...
-        coords = np.nonzero(scmap.get_prob_table(frame, srcmp_bp) > self.THRESHOLD)
+        cy, cx, current_prob, cx_off, cy_off = self._sparse_data[frame][out_bp].unpack()
 
         # SPECIAL CASE: NO IN-FRAME VITERBI VALUES THAT MAKE IT ABOVE THRESHOLD...
-        if (len(coords[0]) == 0):
+        if (cy is None):
             # In this special case, we just copy the prior frame data...
-            self._edge_vals[self._current_frame, out_bp, :] = self._edge_vals[self._current_frame - 1, out_bp, :]
-
-            self._viterbi_frames[self._current_frame][out_bp * 2] = (
-                np.copy(self._viterbi_frames[self._current_frame - 1][out_bp * 2])
-            )
-            self._viterbi_frames[self._current_frame][(out_bp * 2) + 1] = (
-                np.copy(self._viterbi_frames[self._current_frame - 1][out_bp * 2 + 1])
-            )
+            self._sparse_data[frame][out_bp] = self._sparse_data[frame - 1][out_bp].duplicate()
+            self._viterbi_probs[frame][out_bp] = np.copy(self._viterbi_probs[frame - 1][out_bp])
             return
 
         # NORMAL CASE:
 
-        # Get the x and y locations for the points in this frame and the prior frame...
-        cy, cx = coords
-        py, px = self._viterbi_frames[self._current_frame - 1][out_bp * 2].transpose()
+        # Get data for the prior frame...
+        py, px, pprobs, px_off, py_off = self._sparse_data[frame - 1][out_bp].unpack()
+        prior_vit_probs = self._viterbi_probs[frame - 1][out_bp]
 
-        # Get offset values
-        off_x, off_y = np.zeros(np.array(coords).shape) if(scmap.get_offset_map() is None) else np.transpose(
-                       scmap.get_offset_map()[frame, coords[0], coords[1], srcmp_bp])
-        # Grab current non-viterbi probabilities...
-        current_prob = scmap.get_prob_table(frame, srcmp_bp)[coords] * (1 - self.EDGE_PROB)
-        # Grab the prior viterbi probabilities
-        prior_vit_probs = self._viterbi_frames[self._current_frame - 1][(out_bp * 2) + 1][:, 0]
+        # Scale current probabilities to include edges...
+        current_prob = current_prob * (1 - self.EDGE_PROB)
 
         # Get all of the same data for the edge values...
         edge_x, edge_y = self._edge_coords[:, 0], self._edge_coords[:, 1]
@@ -290,39 +421,36 @@ class FastViterbi(Predictor):
 
         # POST FILTER PHASE:
 
-        # Filter out any zero or NaN values from our matrix:
+        # Check and make sure not all values are nan or zero
         post_filter = (~np.isnan(viterbi_vals)) | (viterbi_vals > self.THRESHOLD)
-        coords = coords[0][post_filter], coords[1][post_filter]
-        viterbi_vals = viterbi_vals[post_filter]
 
-        if (len(coords[0]) == 0):
-            # In this special case, we just copy the prior frame data...
-            self._edge_vals[self._current_frame, out_bp, :] = self._edge_vals[self._current_frame - 1, out_bp, :]
-
-            self._viterbi_frames[self._current_frame][out_bp * 2] = (
-                np.copy(self._viterbi_frames[self._current_frame - 1][out_bp * 2])
-            )
-            self._viterbi_frames[self._current_frame][(out_bp * 2) + 1] = (
-                np.copy(self._viterbi_frames[self._current_frame - 1][out_bp * 2 + 1])
-            )
+        if (sum(post_filter) == 0):
+            # In the case where all values are nan or zero, copy the prior frame
+            self._sparse_data[frame][out_bp] = self._sparse_data[frame - 1][out_bp].duplicate()
+            self._viterbi_probs[frame][out_bp] = np.copy(self._viterbi_probs[frame - 1][out_bp])
             return
 
-        # Set coordinates for this frame
-        self._viterbi_frames[self._current_frame][out_bp * 2] = np.transpose(coords)
 
         # SAVE NEW VITERBI FRAMES:
         self._edge_vals[self._current_frame, out_bp] = edge_vit_vals
-        self._viterbi_frames[self._current_frame][out_bp * 2 + 1] = np.transpose((viterbi_vals, off_x, off_y))
+        self._viterbi_probs[self._current_frame][out_bp] = viterbi_vals
 
 
-    def on_frames(self, scmap: TrackingData) -> Union[None, Pose]:
+    def on_frames(self, scmap: TrackingData) -> None:
         """ Handles Forward part of the viterbi algorithm, allowing for faster post processing. """
+        # Perform a step of forward, and return None to indicate we need to post process frames...
+        self._forward_step(scmap)
+        return None
+
+
+    def _forward_step(self, scmap: TrackingData):
+        """ Performs a single phase of forward given newly arrived probability frames. """
         # If gaussian_table is none, we have just started, initialize all variables...
         if(self._gaussian_table is None):
             # Precompute gaussian...
             self._compute_gaussian_table(scmap.get_frame_width(), scmap.get_frame_height())
             # Create empty python list for first frame.
-            self._viterbi_frames[self._current_frame] = [None] * (self._total_bp_count * 2)
+            self._viterbi_probs[self._current_frame] = [None] * (self._total_bp_count)
             # Set down scaling.
             self._down_scaling = scmap.get_down_scaling()
 
@@ -340,7 +468,8 @@ class FastViterbi(Predictor):
 
             for out_bp in range(self._total_bp_count):
                 scmap_bp = int(out_bp // self._num_outputs)
-                self._compute_init_frame(scmap_bp, out_bp, 0, scmap)
+                self._sparcify_and_store(scmap_bp, out_bp, 0, scmap)
+                self._compute_init_frame(out_bp, 0)
 
             # Remove first frame from source map, so we can compute the rest as normal...
             scmap.set_source_map(scmap.get_source_map()[1:])
@@ -350,26 +479,25 @@ class FastViterbi(Predictor):
         for frame in range(scmap.get_frame_count()):
 
             # Create a frame...
-            self._viterbi_frames[self._current_frame] = [None] * (self._total_bp_count * 2)
+            self._viterbi_probs[self._current_frame] = [None] * (self._total_bp_count)
 
             for out_bp in range(self._total_bp_count):
                 srcmp_bp = int(out_bp // self._num_outputs)
+                # Sparcify and stash the frame...
+                self._sparcify_and_store(srcmp_bp, out_bp, frame, scmap)
                 # If the prior frame was a dud frame and all frames before it where dud frames, try initializing
                 # on this frame... Note in a dud frame all points are below threshold...
-                if(self._viterbi_frames[self._current_frame - 1][out_bp * 2] is None):
-                    self._compute_init_frame(srcmp_bp, out_bp, frame, scmap)
+                if(self._viterbi_probs[self._current_frame - 1][out_bp] is None):
+                    self._compute_init_frame(out_bp, frame)
                 # Otherwise we can do full viterbi on this frame...
                 else:
-                    self._compute_normal_frame(srcmp_bp, out_bp, frame, scmap)
+                    self._compute_normal_frame(out_bp, frame)
 
             # Increment frame counter
             self._current_frame += 1
 
-        # Still processing frames, return None to indicate that...
-        return None
 
-
-    def _get_prior_location(self, prior_frame: List[Union[ndarray, None]], prior_edge_probs: ndarray,
+    def _get_prior_location(self, prior_frame: Tuple[SparseTrackingData, ndarray], prior_edge_probs: ndarray,
                             current_point: Tuple[int, int, float]) -> Union[Tuple[bool, int, Tuple[int, int, float]], Tuple[None, None, None]]:
         """
         Performs the viterbi back computation, given prior frame and current predicted point,
@@ -382,7 +510,7 @@ class FastViterbi(Predictor):
         # Unpack the point
         cx, cy, cprob = current_point
         # Get prior frame points/probabilities....
-        px, py, pprob = prior_frame[0][:, 1], prior_frame[0][:, 0], prior_frame[1][:, 0]
+        (py, px, __, __, __), pprob = prior_frame[0].unpack(), prior_frame[1]
         # Get prior edge points/probabilities....
         edge_x, edge_y = self._edge_coords[:, 0], self._edge_coords[:, 1]
 
@@ -394,7 +522,9 @@ class FastViterbi(Predictor):
                               * prior_edge_probs)
 
         # Get max probability in list of possible transitions, for the frame and edge... Also normalize them...
+        # noinspection PyTypeChecker
         max_frame_i: int = np.argmax(prior_frame_viterbi)
+        # noinspection PyTypeChecker
         max_edge_i: int = np.argmax(prior_edge_viterbi)
 
         # Compute total sum of probabilities so we can normalize when returning values...
@@ -410,6 +540,13 @@ class FastViterbi(Predictor):
 
     def on_end(self, progress_bar: tqdm.tqdm) -> Union[None, Pose]:
         """ Handles backward part of viterbi, and then returns the poses """
+        return self._backward(progress_bar)
+
+
+    def _backward(self, progress_bar: tqdm.tqdm) -> Pose:
+        """
+        Performs backward on the entire set of viterbi frames, posting it's progress to the provided progress bar.
+        """
         # Counter to keep track of current frame...
         r_counter = self._num_frames - 1
         # To eventually store all poses
@@ -423,15 +560,15 @@ class FastViterbi(Predictor):
         for bp in range(self._total_bp_count):
             # If point data is None, throw error because entire video has no plotting data then...
             # This should never happen....
-            if(self._viterbi_frames[r_counter][(bp * 2)] is None):
+            if(self._viterbi_probs[r_counter][(bp * 2)] is None):
                 raise ValueError("All frames contain zero points!!! No actual tracking data!!!")
 
-            viterbi_data = self._viterbi_frames[r_counter][(bp * 2) + 1][:, 0]
-            coord_y, coord_x = self._viterbi_frames[r_counter][(bp * 2)][:].transpose()
+            viterbi_data = self._viterbi_probs[r_counter][bp]
+            coord_y, coord_x, __, x_off, y_off = self._sparse_data[r_counter][bp].unpack()
 
             # Perform negation of prior body parts if enabled
             if(self.NEGATE_ON):
-                for bpx, bpy, bpprob in bp_queue:
+                for bpx, bpy, __ in bp_queue:
                     if (bpx is None):
                         continue
                     viterbi_data = viterbi_data * self._neg_gaussian_table[np.abs(coord_y - bpy), np.abs(coord_x - bpx)]
@@ -441,8 +578,8 @@ class FastViterbi(Predictor):
             max_edge_loc = np.argmax(self._edge_vals[r_counter, bp])
 
             # Gather all required fields...
-            y, x = self._viterbi_frames[r_counter][(bp * 2)][max_frame_loc]
-            off_x, off_y = self._viterbi_frames[r_counter][(bp * 2) + 1][max_frame_loc][1:]
+            y, x = coord_x[max_frame_loc], coord_y[max_frame_loc]
+            off_x, off_y = x_off[max_frame_loc], y_off[max_frame_loc]
             prob = viterbi_data[max_frame_loc]
             edge_x, edge_y = self._edge_coords[max_edge_loc]
             edge_prob = self._edge_vals[r_counter, bp, max_edge_loc]
@@ -477,7 +614,7 @@ class FastViterbi(Predictor):
 
             for bp in range(self._total_bp_count):
                 # If this point is None, we add a dud prediction, and continue, as all the rest will be None
-                if(self._viterbi_frames[r_counter][bp * 2] is None):
+                if(self._viterbi_probs[r_counter][bp] is None):
                     all_poses.set_at(r_counter, bp, (-1, -1), (0, 0), 0, 1)
                     current_points.append((None, None, None))
                     if(self.NEGATE_ON):
@@ -485,20 +622,20 @@ class FastViterbi(Predictor):
                     continue
 
                 # Run single step of backtrack....
-                viterbi_data = self._viterbi_frames[r_counter][bp * 2 + 1][:]
-                coord_y, coord_x = self._viterbi_frames[r_counter][bp * 2][:].transpose()
+                viterbi_data = self._viterbi_probs[r_counter][bp]
+                coord_y, coord_x, __, x_off, y_off = self._sparse_data[r_counter][bp].unpack()
 
                 # If negate switch is on, perform negation of all prior bodyparts from this one...
                 if(self.NEGATE_ON):
                     for bpx, bpy, bpprob in bp_queue:
                         if(bpx is None):
                             continue
-                        viterbi_data[:, 0] = viterbi_data[:, 0] * self._neg_gaussian_table[
-                                             np.abs(coord_y - bpy), np.abs(coord_x - bpx)]
+                        viterbi_data[:, 0] = viterbi_data * self._neg_gaussian_table[np.abs(coord_y - bpy),
+                                                                                     np.abs(coord_x - bpx)]
 
 
                 is_in_frame, max_loc, max_point = self._get_prior_location(
-                    [self._viterbi_frames[r_counter][bp * 2], viterbi_data],
+                    (self._sparse_data[r_counter][bp], viterbi_data),
                     self._edge_vals[r_counter, bp],
                     prior_points[bp]
                 )
@@ -514,11 +651,9 @@ class FastViterbi(Predictor):
                 # Based on if the point is in frame or not, decide how to plot it.
                 if(is_in_frame):
                     max_x, max_y, max_normalized_prob = max_point
-                    off_x, off_y = self._viterbi_frames[r_counter][(bp * 2) + 1][max_loc, 1:]
 
-                    all_poses.set_at(r_counter, bp, (max_x, max_y), (off_x, off_y),
-                                     max_normalized_prob,
-                                     self._down_scaling)
+                    all_poses.set_at(r_counter, bp, (max_x, max_y), (x_off[max_loc], y_off[max_loc]),
+                                     max_normalized_prob, self._down_scaling)
 
                     if (self.NEGATE_ON):
                         bp_queue.append(max_point)
@@ -539,7 +674,6 @@ class FastViterbi(Predictor):
 
         # Return the poses...
         return all_poses
-
 
     @staticmethod
     def get_settings() -> Union[List[Tuple[str, str, Any]], None]:
