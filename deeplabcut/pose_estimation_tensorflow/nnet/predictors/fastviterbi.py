@@ -727,7 +727,7 @@ class FastViterbi(Predictor):
 
     @classmethod
     def get_tests(cls) -> Union[List[Callable[[], Tuple[bool, str, str]]], None]:
-        return [cls.test_plotting, cls.test_sparcification()]
+        return [cls.test_plotting, cls.test_sparcification]
 
 
     @classmethod
@@ -798,9 +798,9 @@ class FastViterbi(Predictor):
 
         if(any([(data is None) for data in predictor._viterbi_probs]) or
            any([(data is None) for data in predictor._sparse_data])):
-            return (False, "None Entries...", "No None Entries...")
+            return (False, str((predictor._viterbi_probs, predictor._sparse_data)), "No None Entries...")
         else:
-            return (True, "No None Entries...", "No None Entries...")
+            return (True, str((predictor._viterbi_probs, predictor._sparse_data)), "No None Entries...")
 
 
     @classmethod
