@@ -786,18 +786,20 @@ class FastViterbi(Predictor):
                                                      [1.0, 0, 0],
                                                      [0.0, 0, 0]]))
 
-        predictor = cls(["part1"], 1, 4,
-                        {name: val for name, desc, val in cls.get_settings()}, None)
+        predictor = cls(["part1"], 1, 4, {name: val for name, desc, val in cls.get_settings()}, None)
 
         # Pass it data...
         for data in track_data:
             predictor.on_frames(data)
 
         # Check output
-        poses = predictor.on_end(tqdm.tqdm(total=4)).get_all()
+        predictor.on_end(tqdm.tqdm(total=4))
 
-        if(any([(data is None) for data in predictor._viterbi_probs]) or
-           any([(data is None) for data in predictor._sparse_data])):
+        print(predictor._sparse_data)
+        print(predictor._viterbi_probs)
+
+        if(any([(data[0] is None) for data in predictor._viterbi_probs]) or
+           any([(data[0] is None) for data in predictor._sparse_data])):
             return (False, str((predictor._viterbi_probs, predictor._sparse_data)), "No None Entries...")
         else:
             return (True, str((predictor._viterbi_probs, predictor._sparse_data)), "No None Entries...")
