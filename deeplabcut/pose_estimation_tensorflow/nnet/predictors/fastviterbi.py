@@ -79,7 +79,7 @@ class SparseTrackingData:
             self._prob_access = None
             return
         # Combine offsets and probabilities into one numpy array...
-        offsets_plus_probs = np.concatenate(np.transpose(probs[None]), offsets, axis=1)
+        offsets_plus_probs = np.concatenate(np.transpose(np.expand_dims(probs, axis=0)), offsets, axis=1)
 
         if((len(offsets_plus_probs.shape) != 2) and offsets_plus_probs.shape[1] == 3):
             raise ValueError("Offset/Probability array must be n by 3...")
