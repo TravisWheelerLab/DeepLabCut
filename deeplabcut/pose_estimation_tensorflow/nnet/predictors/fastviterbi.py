@@ -727,7 +727,7 @@ class FastViterbi(Predictor):
 
     @classmethod
     def get_tests(cls) -> Union[List[Callable[[], Tuple[bool, str, str]]], None]:
-        return [cls.test_plotting]
+        return [cls.test_plotting, cls.test_sparcification()]
 
 
     @classmethod
@@ -750,7 +750,7 @@ class FastViterbi(Predictor):
 
         # Probabilities can change quite easily by even very minute changes to the algorithm, so we don't care about
         # them, just the predicted locations of things...
-        expected_result = np.array([[3, 3], [3, 1], [1, 1], [1, 3]])
+        expected_result = np.array([[3, 3], [3, 1], [1, 1], [1, 1]])
 
         # Make the predictor...
         predictor = cls(["part1"], 1, track_data.get_frame_count(),
@@ -766,6 +766,42 @@ class FastViterbi(Predictor):
             return (True, "\n" + str(expected_result), "\n" + str(np.array(poses[:, :2])))
         else:
             return (False, "\n" + str(expected_result), "\n" + str(np.array(poses[:, :2])))
+
+
+    @classmethod
+    def test_sparcification(cls) -> Tuple[bool, str, str]:
+        # Make tracking data...
+        track_data = [TrackingData.empty_tracking_data(1, 1, 3, 3, 2) for i in range(4)]
+
+        track_data[0].set_prob_table(0, 0, np.array([[0, 0, 0],
+                                                     [0, 1, 0],
+                                                     [0, 0, 0]]))
+        track_data[1].set_prob_table(0, 0, np.array([[0, 1.0, 0],
+                                                     [0, 0.5, 0],
+                                                     [0, 0.0, 0]]))
+        track_data[2].set_prob_table(0, 0, np.array([[1, 0.5, 0],
+                                                     [0, 0.0, 0],
+                                                     [0, 0.0, 0]]))
+        track_data[3].set_prob_table(0, 0, np.array([[0.5, 0, 0],
+                                                     [1.0, 0, 0],
+                                                     [0.0, 0, 0]]))
+
+        predictor = cls(["part1"], 1, 4,
+                        {name: val for name, desc, val in cls.get_settings()}, None)
+
+        # Pass it data...
+        for data in track_data:
+            predictor.on_frames(data)
+
+        # Check output
+        poses = predictor.on_end(tqdm.tqdm(total=4)).get_all()
+
+        if(any([(data is None) for data in predictor._viterbi_probs]) or
+           any([(data is None) for data in predictor._sparse_data])):
+            return (False, "None Entries...", "No None Entries...")
+        else:
+            return (True, "No None Entries...", "No None Entries...")
+
 
     @classmethod
     def supports_multi_output(cls) -> bool:
