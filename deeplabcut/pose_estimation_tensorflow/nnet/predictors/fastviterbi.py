@@ -14,7 +14,6 @@ from collections import deque
 
 # TODO: Add more test methods, disable numpy warnings....
 # TODO: Add Concept of being "In the Ground..."
-# TODO: SparseTrackingData class
 # Represents an valid numpy indexing type.
 Indexer = Union[slice, int, List[int], Tuple[int], None]
 
@@ -179,10 +178,10 @@ class FastViterbi(Predictor):
         self._total_bp_count = len(bodyparts) * num_outputs
 
         # Holds the original TrackingData in a sparse format using the SparseTrackingData specified above.
-        self._sparse_data: List[List[SparseTrackingData]] = [None] * num_frames
+        self._sparse_data: List[List[Optional[SparseTrackingData]]] = [None] * num_frames
         # Will hold the viterbi frames on the forward compute...
         # Dimension are: Frame -> Bodypart -> (Viterbi probability).
-        self._viterbi_probs: List[List[Union[ndarray, None]]] = [None] * num_frames
+        self._viterbi_probs: List[List[Optional[ndarray]]] = [None] * num_frames
 
         # Stashes edge to edge probabilities, in the form delta-edge-index -> gaussian...
         self._edge_edge_table: ndarray = None
@@ -341,10 +340,49 @@ class FastViterbi(Predictor):
         return self._gaussian_table[delta_y.flatten(), delta_x.flatten()].reshape(delta_y.shape)
 
 
-    def _sparcify_and_store(self, srcmp_bp: int, out_bp: int, frame: int, scmap: TrackingData):
+    def _init_data_structures(self, scmap: TrackingData):
+        """ Initializes all data structures and computational tables needed by the algorithm """
+        # Pre-compute the gaussian...
+        self._compute_gaussian_table(scmap.get_frame_width(), scmap.get_frame_height())
+        # Set down scaling.
+        self._down_scaling = scmap.get_down_scaling()
+
+        # Compute negative gaussian if negative impact setting is switched on...
+        if (self.NEGATE_ON):
+            self._compute_neg_gaussian_table(scmap.get_frame_width(), scmap.get_frame_height())
+
+        # Adjust the blocks-per edge to avoid having it greater then the length of one of the sides of the frame.
+        self.BLOCKS_PER_EDGE = min(scmap.get_frame_height(), scmap.get_frame_width(), self.BLOCKS_PER_EDGE)
+        self._edge_block_value = self.EDGE_PROB / (self.BLOCKS_PER_EDGE * 4)  # Must be recomputed...
+
+        # Create off edge point table of gaussian values for off-edge/on-edge transitions...
+        self._compute_edge_coordinates(scmap.get_frame_width(), scmap.get_frame_height(), self.BLOCKS_PER_EDGE)
+        self._edge_vals = np.zeros((self._num_frames, self._total_bp_count, self.BLOCKS_PER_EDGE * 4), dtype="float32")
+
+
+    def _sparcify_and_store(self, out_bp: int, out_frame: int, srcmp_bp: int, srcmp_frame: int, scmap: TrackingData):
         """ Sparsifies the tracking data and then stores it in self._sparse_data so that it can be used by the Viterbi
             algorithm later and repeatedly... """
-        self._sparse_data[frame][out_bp] = SparseTrackingData.sparsify(scmap, frame, srcmp_bp, self.THRESHOLD)
+        self._sparse_data[out_frame][out_bp] = SparseTrackingData.sparsify(scmap, srcmp_frame, srcmp_bp, self.THRESHOLD)
+
+
+    def _sparcify_source_map(self, scmap: TrackingData):
+        """
+        Sparcifies the all of the frames in scmap, the provided tracking data. Uses self._current_frame to figure out
+        where to put these frames, but does not increment or change the value of it.
+        """
+        out_frame = self._current_frame
+
+        for srcmp_frame in range(scmap.get_frame_count()):
+            # Initialize all the body parts list to a list of None.
+            self._sparse_data[out_frame] = [None] * self._total_bp_count
+
+            for out_bp in range(self._total_bp_count):
+                # Compute the source map body part, and then sparcify this frame.
+                srcmp_bp = int(out_bp // self._num_outputs)
+                self._sparcify_and_store(out_bp, out_frame, srcmp_bp, srcmp_frame, scmap)
+
+            out_frame += 1
 
 
     def _compute_init_frame(self, out_bp: int, frame: int):
@@ -353,7 +391,7 @@ class FastViterbi(Predictor):
         y, x, probs, x_off, y_off = self._sparse_data[frame][out_bp].unpack()
 
         # Set initial value for edge values...
-        self._edge_vals[self._current_frame, out_bp, :] = self._edge_block_value
+        self._edge_vals[frame, out_bp, :] = self._edge_block_value
 
         # If no points are found above the threshold, frame for this bodypart is a dud, set it to none...
         if (y is None):
@@ -374,6 +412,7 @@ class FastViterbi(Predictor):
             # In this special case, we just copy the prior frame data...
             self._sparse_data[frame][out_bp] = self._sparse_data[frame - 1][out_bp].duplicate()
             self._viterbi_probs[frame][out_bp] = np.copy(self._viterbi_probs[frame - 1][out_bp])
+            self._edge_vals[frame, out_bp] = self._edge_vals[frame - 1, out_bp]
             return
 
         # NORMAL CASE:
@@ -387,7 +426,7 @@ class FastViterbi(Predictor):
 
         # Get all of the same data for the edge values...
         edge_x, edge_y = self._edge_coords[:, 0], self._edge_coords[:, 1]
-        prior_edge_probs = self._edge_vals[self._current_frame - 1, out_bp, :]
+        prior_edge_probs = self._edge_vals[frame - 1, out_bp, :]
         current_edge_probs = np.array([self._edge_block_value] * (self.BLOCKS_PER_EDGE * 4))
 
         # COMPUTE IN-FRAME VITERBI VALUES:
@@ -428,73 +467,48 @@ class FastViterbi(Predictor):
             # In the case where all values are nan or zero, copy the prior frame
             self._sparse_data[frame][out_bp] = self._sparse_data[frame - 1][out_bp].duplicate()
             self._viterbi_probs[frame][out_bp] = np.copy(self._viterbi_probs[frame - 1][out_bp])
+            self._edge_vals[frame, out_bp] = self._edge_vals[frame - 1, out_bp]
             return
 
 
         # SAVE NEW VITERBI FRAMES:
-        self._edge_vals[self._current_frame, out_bp] = edge_vit_vals
-        self._viterbi_probs[self._current_frame][out_bp] = viterbi_vals
+        self._edge_vals[frame, out_bp] = edge_vit_vals
+        self._viterbi_probs[frame][out_bp] = viterbi_vals
 
 
-    def on_frames(self, scmap: TrackingData) -> None:
-        """ Handles Forward part of the viterbi algorithm, allowing for faster post processing. """
-        # Perform a step of forward, and return None to indicate we need to post process frames...
-        self._forward_step(scmap)
-        return None
-
-
-    def _forward_step(self, scmap: TrackingData):
-        """ Performs a single phase of forward given newly arrived probability frames. """
-        # If gaussian_table is none, we have just started, initialize all variables...
-        if(self._gaussian_table is None):
-            # Precompute gaussian...
-            self._compute_gaussian_table(scmap.get_frame_width(), scmap.get_frame_height())
-            # Create empty python list for first frame.
-            self._viterbi_probs[self._current_frame] = [None] * (self._total_bp_count)
-            # Set down scaling.
-            self._down_scaling = scmap.get_down_scaling()
-
-            # Compute negative gaussian if negative impact setting is switched on...
-            if(self.NEGATE_ON):
-                self._compute_neg_gaussian_table(scmap.get_frame_width(), scmap.get_frame_height())
-
-            # Adjust the blocks-per edge to avoid having it greater then the length of one of the sides of the frame.
-            self.BLOCKS_PER_EDGE = min(scmap.get_frame_height(), scmap.get_frame_width(), self.BLOCKS_PER_EDGE)
-            self._edge_block_value = self.EDGE_PROB / (self.BLOCKS_PER_EDGE * 4)  # Must be recomputed...
-
-            # Create off edge point table of gaussian values for off-edge/on-edge transitions...
-            self._compute_edge_coordinates(scmap.get_frame_width(), scmap.get_frame_height(), self.BLOCKS_PER_EDGE)
-            self._edge_vals = np.zeros((self._num_frames, self._total_bp_count, self.BLOCKS_PER_EDGE * 4), dtype="float32")
-
-            for out_bp in range(self._total_bp_count):
-                scmap_bp = int(out_bp // self._num_outputs)
-                self._sparcify_and_store(scmap_bp, out_bp, 0, scmap)
-                self._compute_init_frame(out_bp, 0)
-
-            # Remove first frame from source map, so we can compute the rest as normal...
-            scmap.set_source_map(scmap.get_source_map()[1:])
-            self._current_frame += 1
-
+    def _forward_step(self, frame_count: int):
+        """ Performs a single phase of forward. It assumes the frame has already been sparsified and stored in
+            self._sparse_data. """
         # Continue on to main loop...
-        for frame in range(scmap.get_frame_count()):
+        for __ in range(frame_count):
 
             # Create a frame...
             self._viterbi_probs[self._current_frame] = [None] * (self._total_bp_count)
 
             for out_bp in range(self._total_bp_count):
-                srcmp_bp = int(out_bp // self._num_outputs)
-                # Sparcify and stash the frame...
-                self._sparcify_and_store(srcmp_bp, out_bp, frame, scmap)
                 # If the prior frame was a dud frame and all frames before it where dud frames, try initializing
-                # on this frame... Note in a dud frame all points are below threshold...
-                if(self._viterbi_probs[self._current_frame - 1][out_bp] is None):
-                    self._compute_init_frame(out_bp, frame)
+                # on this frame... Note in a dud frame all points are below threshold...(Also init on first frame)
+                if((self._current_frame == 0) or (self._viterbi_probs[self._current_frame - 1][out_bp] is None)):
+                    self._compute_init_frame(out_bp, self._current_frame)
                 # Otherwise we can do full viterbi on this frame...
                 else:
-                    self._compute_normal_frame(out_bp, frame)
+                    self._compute_normal_frame(out_bp, self._current_frame)
 
             # Increment frame counter
             self._current_frame += 1
+
+
+    def on_frames(self, scmap: TrackingData) -> None:
+        """ Handles Forward part of the viterbi algorithm, allowing for faster post processing. """
+        # Perform a step of forward, and return None to indicate we need to post process frames...
+        # If gaussian table has not been computed, initialize all data structures.
+        if(self._gaussian_table is None):
+            self._init_data_structures(scmap)
+
+        # Sparcify and store the source map, and then compute the viterbi frames of it....
+        self._sparcify_source_map(scmap)
+        self._forward_step(scmap.get_frame_count())
+        return None
 
 
     def _get_prior_location(self, prior_frame: Tuple[SparseTrackingData, ndarray], prior_edge_probs: ndarray,
@@ -630,8 +644,8 @@ class FastViterbi(Predictor):
                     for bpx, bpy, bpprob in bp_queue:
                         if(bpx is None):
                             continue
-                        viterbi_data[:, 0] = viterbi_data * self._neg_gaussian_table[np.abs(coord_y - bpy),
-                                                                                     np.abs(coord_x - bpx)]
+                        viterbi_data = viterbi_data * self._neg_gaussian_table[np.abs(coord_y - bpy),
+                                                                               np.abs(coord_x - bpx)]
 
 
                 is_in_frame, max_loc, max_point = self._get_prior_location(
@@ -721,10 +735,18 @@ class FastViterbi(Predictor):
         # Make tracking data...
         track_data = TrackingData.empty_tracking_data(4, 1, 3, 3, 2)
 
-        track_data.set_prob_table(0, 0, np.array([[0, 0, 0], [0, 1, 0], [0, 0, 0]]))
-        track_data.set_prob_table(1, 0, np.array([[0, 1, 0], [0, 0.5, 0], [0, 0, 0]]))
-        track_data.set_prob_table(2, 0, np.array([[1, 0.5, 0], [0, 0, 0], [0, 0, 0]]))
-        track_data.set_prob_table(3, 0, np.array([[0.5, 0, 0], [1, 0, 0], [0, 0, 0]]))
+        track_data.set_prob_table(0, 0, np.array([[0, 0, 0],
+                                                  [0, 1, 0],
+                                                  [0, 0, 0]]))
+        track_data.set_prob_table(1, 0, np.array([[0, 1.0, 0],
+                                                  [0, 0.5, 0],
+                                                  [0, 0.0, 0]]))
+        track_data.set_prob_table(2, 0, np.array([[1, 0.5, 0],
+                                                  [0, 0.0, 0],
+                                                  [0, 0.0, 0]]))
+        track_data.set_prob_table(3, 0, np.array([[0.5, 0, 0],
+                                                  [1.0, 0, 0],
+                                                  [0.0, 0, 0]]))
 
         # Probabilities can change quite easily by even very minute changes to the algorithm, so we don't care about
         # them, just the predicted locations of things...
@@ -740,7 +762,7 @@ class FastViterbi(Predictor):
         # Check output
         poses = predictor.on_end(tqdm.tqdm(total=4)).get_all()
 
-        if(np.allclose(poses[:, :2], expected_result)):
+        if (np.allclose(poses[:, :2], expected_result)):
             return (True, "\n" + str(expected_result), "\n" + str(np.array(poses[:, :2])))
         else:
             return (False, "\n" + str(expected_result), "\n" + str(np.array(poses[:, :2])))
@@ -748,4 +770,5 @@ class FastViterbi(Predictor):
     @classmethod
     def supports_multi_output(cls) -> bool:
         return True
+
 
