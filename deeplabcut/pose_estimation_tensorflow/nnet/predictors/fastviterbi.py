@@ -127,6 +127,7 @@ class SparseTrackingData:
         """
         new_sparse_data = SparseTrackingData()
         new_sparse_data.pack(*(np.copy(arr) for arr in self.unpack()))
+        return new_sparse_data
 
 
     @classmethod
