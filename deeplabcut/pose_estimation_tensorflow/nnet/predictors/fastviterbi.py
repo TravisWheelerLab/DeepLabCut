@@ -575,7 +575,7 @@ class FastViterbi(Predictor):
         for bp in range(self._total_bp_count):
             # If point data is None, throw error because entire video has no plotting data then...
             # This should never happen....
-            if(self._viterbi_probs[r_counter][(bp * 2)] is None):
+            if(self._viterbi_probs[r_counter][bp] is None):
                 raise ValueError("All frames contain zero points!!! No actual tracking data!!!")
 
             viterbi_data = self._viterbi_probs[r_counter][bp]
