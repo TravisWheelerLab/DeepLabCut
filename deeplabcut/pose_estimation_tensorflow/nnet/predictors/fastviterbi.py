@@ -166,7 +166,7 @@ class FastViterbi(Predictor):
     viterbi implementation...)
     """
     # The amount of side block increase for the normal distribution to increase by 1...
-    ND_UNIT_PER_SIDE_COUNT = 10
+    ND_UNIT_PER_SIDE_COUNT = 7
 
     def __init__(self, bodyparts: Union[List[str]], num_outputs: int, num_frames: int, settings: Union[Dict[str, Any], None], video_metadata: Dict[str, Any]):
         """ Initialized a fastviterbi plugin for analyzing a video """
@@ -795,9 +795,6 @@ class FastViterbi(Predictor):
 
         # Check output
         predictor.on_end(tqdm.tqdm(total=4))
-
-        print(predictor._sparse_data)
-        print(predictor._viterbi_probs)
 
         if(any([(data[0] is None) for data in predictor._viterbi_probs]) or
            any([(data[0] is None) for data in predictor._sparse_data])):
