@@ -147,7 +147,7 @@ class SparseTrackingData:
         if(track_data.get_offset_map() is None):
             x_off, y_off = np.zeros(x.shape, dtype=np.float32), np.zeros(y.shape, dtype=np.float32)
         else:
-            x_off, y_off = track_data.get_offset_map()[frame, y, x, bodypart]
+            x_off, y_off = np.transpose(track_data.get_offset_map()[frame, y, x, bodypart])
 
         probs = track_data.get_prob_table(frame, bodypart)[y, x]
 
