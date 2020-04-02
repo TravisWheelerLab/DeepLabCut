@@ -166,7 +166,7 @@ class FastViterbi(Predictor):
     viterbi implementation...)
     """
     # The amount of side block increase for the normal distribution to increase by 1...
-    ND_UNIT_PER_SIDE_COUNT = 7
+    ND_UNIT_PER_SIDE_COUNT = 10
 
     def __init__(self, bodyparts: Union[List[str]], num_outputs: int, num_frames: int, settings: Union[Dict[str, Any], None], video_metadata: Dict[str, Any]):
         """ Initialized a fastviterbi plugin for analyzing a video """
@@ -519,7 +519,7 @@ class FastViterbi(Predictor):
         returns the predicted point for this frame... (for single bodypart...)
         """
         # If the point data is none, return None
-        if((prior_frame[0] is None) or (current_point[0] is None)):
+        if((prior_frame[1] is None) or (current_point[0] is None)):
             return None, None, None
 
         # Unpack the point
@@ -618,6 +618,8 @@ class FastViterbi(Predictor):
                 if(self.NEGATE_ON):
                     bp_queue.append((x, y, normalized_prob))
 
+            self._viterbi_probs[r_counter][bp] = normalized_prob[2]
+
         # Drop the counter by 1
         r_counter -= 1
         progress_bar.update()
@@ -679,6 +681,7 @@ class FastViterbi(Predictor):
                         bp_queue.append((None, None, None))
 
                 # Append point to current points....
+                self._viterbi_probs[r_counter][bp] = max_point[2]
                 current_points.append(max_point)
 
             # Set prior_points to current_points...
@@ -716,7 +719,7 @@ class FastViterbi(Predictor):
 
     @staticmethod
     def get_name() -> str:
-        return "fastviterbi"
+        return "fast_viterbi"
 
     @staticmethod
     def get_description() -> str:
