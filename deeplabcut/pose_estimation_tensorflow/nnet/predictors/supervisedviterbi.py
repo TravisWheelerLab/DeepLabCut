@@ -28,7 +28,7 @@ class SupervisedViterbi(FastViterbi):
 
         # The passed detection algorithm and it's arguments.
         self.DETECTION_ALGORITHM = settings["detection_algorithm"][0]
-        self.DETECTION_ALGORITHM = settings["detection_algorithm"][1:]
+        self.DETECTION_ARGS = settings["detection_algorithm"][1:]
 
         super().__init__(bodyparts, num_outputs, num_frames, settings, video_metadata)
 
@@ -40,7 +40,7 @@ class SupervisedViterbi(FastViterbi):
         drop_value = float(args[0]) if(len(args) > 0) else 0.5
         probs = np.array(super()._viterbi_probs)
 
-        diff_forward = np.concatenate(np.transpose([[0] * probs.shape[1]]), probs[1:] - probs[:-1], axis=1)
+        diff_forward = np.concatenate(np.zeros((1, probs.shape[1])), probs[1:] - probs[:-1], axis=1)
         diff_forward = np.nonzero(diff_forward >= drop_value)
 
         return diff_forward
