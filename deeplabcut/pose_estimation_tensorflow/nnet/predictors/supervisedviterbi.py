@@ -3,7 +3,7 @@ from typing import Union, List, Tuple, Any, Dict, Callable, Optional
 from tqdm import tqdm
 
 # Plugin base class
-from deeplabcut.pose_estimation_tensorflow.nnet.predictors.fastviterbi import FastViterbi
+from deeplabcut.pose_estimation_tensorflow.nnet.predictors.fastviterbi import FastViterbi, SparseTrackingData
 from deeplabcut.pose_estimation_tensorflow.nnet.processing import Pose
 
 # For computations
@@ -22,11 +22,12 @@ from pathlib import Path
 # Collecting video frames...
 import cv2
 
+
 from collections import namedtuple
 
 # MAIN UI DISPLAY CODE BELOW:
 
-# For storing frame info in the gui really just a convienent way of providing names to the different parts of the frame.
+# For storing frame info in the gui really just a convenient way of providing names to the different parts of the frame.
 FrameInfo = namedtuple("FrameInfo", ["prev", "current", "next"])
 
 class PointPicker:
@@ -166,6 +167,8 @@ class SupervisedViterbi(FastViterbi):
 
         self.__video_path = Path(video_metadata["orig-video-path"])
         self.__frames = FrameInfo(None, None, None)
+
+        # We need to read in 2 frames before __frame.current becomes frame 0.
         self.__current_video_frame = -2
 
 
@@ -190,14 +193,16 @@ class SupervisedViterbi(FastViterbi):
 
 
     def _eat_frames(self, capture: cv2.VideoCapture, goto_frame: int) -> FrameInfo:
-        print("Om nom num...")
-
+        """
+        Private method: Eat frames, storing in the frames structure until we reach the desired frame.....
+        """
         while(self.__current_video_frame < goto_frame):
             self.__frames.prev = self.__frames.current
             self.__frames.current = self.__frames.next
 
-            if(capture.isOpen()):
-                self.__frames.next = capture.read()
+            if(capture.isOpened()):
+                # We ignore the return value....
+                __, self.__frames.next = capture.read()
             else:
                 self.__frames.next = None
 
@@ -206,18 +211,20 @@ class SupervisedViterbi(FastViterbi):
         return self.__frames
 
 
-
     def on_end(self, progress_bar: tqdm) -> Optional[Pose]:
-        poses = super()._backward(progress_bar)
+        poses = super().on_end(progress_bar)
+        # Reset the current frame....
         super()._current_frame = 0
 
-        cap = cv2.VideoCapture(str(self.__video_path))
-
+        # Run the selected detection algorithm:
         print("Looking for poorly labeled frames: ")
         relabel_frames = np.transpose(self.MODES[self.DETECTION_ALGORITHM](self.DETECTION_ARGS, poses))
         relabel_frames = relabel_frames[np.argsort[relabel_frames[:, 0]]]
 
+        # Ask user to label bad frames, correct them....
         print("Labeling frames: ")
+
+        cap = cv2.VideoCapture(str(self.__video_path))
 
         for frame, bp in tqdm(relabel_frames):
             frames = self._eat_frames(cap, frame)
@@ -227,15 +234,38 @@ class SupervisedViterbi(FastViterbi):
 
             locations = (poses.get_x_at(frame, bp + off), poses.get_y_at(frame, bp + off) for off in [-1, 0, 1])
 
+            # Showing the point picker and getting user feedback...
             point_editor = PointPicker(f"Frame {frame}, {bp_name} {bp_number}", self.__TITLES, frames, locations)
             point_editor.show()
+            point = point_editor.get_selected_point()
 
+            if(point is None):
+                # If user didn't select a point, duplicate prior frame, or if we are on the first frame set it to None.
+                if(frame > 0):
+                    self._sparse_data[frame][bp] = self._sparse_data[frame - 1][bp]
+                else:
+                    self._sparse_data[frame][bp] = SparseTrackingData()
+                    self._sparse_data[frame][bp].pack(*[np.array([0]) for __ in range(5)])
+            else:
+                # User picked a spot, set it as the only point in this frame with 100% probability...
+                x = np.array([int(point[0] // self._down_scaling)])
+                y = np.array([int(point[1] // self._down_scaling)])
+                off_x = np.array([(point[0] % self._down_scaling) - (0.5 * self._down_scaling)])
+                off_y = np.array([(point[1] % self._down_scaling) - (0.5 * self._down_scaling)])
+                prob = np.array([1])
 
+                self._sparse_data[frame][bp].pack(y, x, prob, off_x, off_y)
 
+        # Gotta release the video reader...
+        cap.release()
 
+        # Redo forward and backward:
+        print("Rerunning Forward:")
+        for __ in tqdm(range(self._num_frames)):
+            self._forward_step(1)
 
-
-
+        print("Rerunning Backward:")
+        return self._backward(tqdm(total=self._num_frames))
 
 
 
@@ -248,7 +278,7 @@ class SupervisedViterbi(FastViterbi):
                                     "certain probability.\n"
                                     " - ['on_probability_drop', (optional float 0 < x < 1)]: Select frames on which "
                                     "the probability has dropped by the specified amount.",
-             ["threshold", 0.5])
+             ["threshold", 0.1])
         ]
 
     @staticmethod
