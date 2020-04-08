@@ -1,5 +1,7 @@
 # For types in methods
 from typing import Union, List, Tuple, Any, Dict, Callable, Optional
+
+from matplotlib.patches import Circle
 from tqdm import tqdm
 
 # Plugin base class
@@ -10,11 +12,17 @@ from deeplabcut.pose_estimation_tensorflow.nnet.processing import Pose
 import numpy as np
 
 # For custom point selection UI....
-import matplotlib.pyplot as plt
+import wx
+from matplotlib.backends.backend_wxagg import FigureFrameWxAgg
+from matplotlib.figure import Figure
 import matplotlib
 from matplotlib.backend_tools import ToolBase, ToolToggleBase
-from matplotlib.backend_bases import MouseButton
-matplotlib.rcParams["toolbar"] = "toolmanager"
+
+
+class MouseButton:
+    LEFT = 1
+    MIDDLE = 2
+    RIGHT = 3
 
 # Path manipulation...
 from pathlib import Path
@@ -35,7 +43,10 @@ class PointPicker:
     Allows user to pick a point location using matplotlib...
     """
 
+    APP = wx.App()
+
     def __init__(self, main_title: str, titles, frames, predicted_locations):
+        matplotlib.rcParams["toolbar"] = "toolmanager"
         self._frames = FrameInfo(*frames)
 
         self._loc = FrameInfo(*predicted_locations)
@@ -43,7 +54,7 @@ class PointPicker:
 
         self._current_loc = self._loc.current
 
-        self._figure = plt.figure(constrained_layout=True)
+        self._figure = Figure()
         self._grid = self._figure.add_gridspec(4, 4)
         ax = (self._figure.add_subplot(self._grid[0, :2]),
               self._figure.add_subplot(self._grid[1:, :]),
@@ -57,12 +68,12 @@ class PointPicker:
 
         for ax, title, image, point_loc, in zip(self._axes, self._titles, self._frames, self._loc):
             ax.set_title(title)
-            if(ax is not None):
+            if(image is not None):
                 ax.imshow(image, aspect="equal")
             if(point_loc is None):
                 point_loc = (-5, -5)
 
-            circle = plt.Circle(point_loc, 0.02 * self._frames.current.shape[0], clip_on=True, color=(0, 0, 1, 0.5),
+            circle = Circle(point_loc, 0.02 * self._frames.current.shape[0], clip_on=True, color=(0, 0, 1, 0.5),
                                 picker=True)
             ax.add_artist(circle)
             circles.append(circle)
@@ -71,9 +82,11 @@ class PointPicker:
 
         self._points = FrameInfo(*circles)
 
+        self._wx_frame = FigureFrameWxAgg(-1, self._figure)
+
         # Grab the toolbar and tool manager, we will hack in our own button using it!
-        self._toolmgr = self._figure.canvas.manager.toolmanager
-        self._toolbar = self._figure.canvas.manager.toolbar
+        self._toolmgr = self._wx_frame.toolmanager
+        self._toolbar = self._wx_frame.toolbar
 
         self._mode = None
 
@@ -87,7 +100,6 @@ class PointPicker:
             radio_group = "default"
 
             def enable(self, event):
-                super().enable()
                 set_mode("Edit")
 
             def disable(self, event):
@@ -100,22 +112,25 @@ class PointPicker:
             name = "Submit"
             description = "Submit point data now!"
 
+            APP = self.APP
+            WINDOW = self._wx_frame
+
             def trigger(self, sender, event, data=None):
-                plt.close(self._figure)
+                self.WINDOW.Destroy()
+                self.APP.ExitMainLoop()
 
         self._toolmgr.add_tool("Submit", SubmitBtn)
         self._toolbar.add_tool(self._toolmgr.get_tool("Submit"), "Submit")
 
         def pick_evt(event):
-            print(event.mouseevent.button)
             if (event.artist == self._points.current and
                     (event.mouseevent.button == MouseButton.RIGHT) and
                     (self._mode == "Edit")):
                 self._points.current.set_visible(False)
                 self._current_loc = None
-                self._figure.canvas.draw_idle()
+                self._wx_frame.canvas.draw_idle()
 
-        self._figure.canvas.mpl_connect("pick_event", pick_evt)
+        self._wx_frame.canvas.mpl_connect("pick_event", pick_evt)
 
         def release_evt(event):
             if (event.button == MouseButton.LEFT and event.inaxes == self._axes.current and self._mode == "Edit"):
@@ -124,13 +139,16 @@ class PointPicker:
                         self._points.current.set_visible(True)
                         self._points.current.set_center((event.xdata, event.ydata))
                         self._current_loc = (event.xdata, event.ydata)
-                        self._figure.canvas.draw_idle()
+                        self._wx_frame.canvas.draw_idle()
 
-        self._figure.canvas.mpl_connect("button_release_event", release_evt)
+        self._wx_frame.canvas.mpl_connect("button_release_event", release_evt)
 
     def show(self):
-        plt.figure(self._figure.number)
-        plt.show()
+        self.APP.SetExitOnFrameDelete(True)
+        self._wx_frame.Show(True)
+        self.APP.SetTopWindow(self._wx_frame)
+        self.APP.MainLoop()
+        return self.get_selected_point()
 
     def get_selected_point(self):
         return self._current_loc
@@ -144,7 +162,6 @@ class SupervisedViterbi(FastViterbi):
     asks for user feedback on frames it is unsure about and then reruns the algorithm for better
     results.
     """
-
     __TITLES = ["Previous Frame", "Click to move point, right click to delete.", "Next Frame"]
 
     def __init__(self, bodyparts: Union[List[str]], num_outputs: int, num_frames: int,
@@ -153,7 +170,7 @@ class SupervisedViterbi(FastViterbi):
 
         self.MODES = {
             "on_probability_drop": self._on_prob_drop,
-            "threshold_drop": self._on_low_prob
+            "threshold": self._on_low_prob
         }
 
         # The passed detection algorithm and it's arguments.
@@ -177,7 +194,7 @@ class SupervisedViterbi(FastViterbi):
         Returns the frames and
         """
         drop_value = float(args[0]) if(len(args) > 0 and (0 < float(args[0]) < 1)) else 0.5
-        probs = np.array(super()._viterbi_probs)
+        probs = np.array(self._viterbi_probs)
 
         diff_forward = np.concatenate(np.zeros((1, probs.shape[1])), probs[1:] - probs[:-1], axis=1)
         diff_forward = np.nonzero(diff_forward >= drop_value)
@@ -187,7 +204,7 @@ class SupervisedViterbi(FastViterbi):
 
     def _on_low_prob(self, args: List[str], poses: Pose) -> Tuple[np.ndarray, np.ndarray]:
         threshold = float(args[0]) if(len(args) > 0 and (0 < float(args[0]) < 1)) else 0.1
-        probs = np.array(super()._viterbi_probs)
+        probs = np.array(self._viterbi_probs)
 
         return np.nonzero(probs < threshold)
 
@@ -197,29 +214,30 @@ class SupervisedViterbi(FastViterbi):
         Private method: Eat frames, storing in the frames structure until we reach the desired frame.....
         """
         while(self.__current_video_frame < goto_frame):
-            self.__frames.prev = self.__frames.current
-            self.__frames.current = self.__frames.next
+            prev = self.__frames.current
+            current = self.__frames.next
 
             if(capture.isOpened()):
                 # We ignore the return value....
-                __, self.__frames.next = capture.read()
+                __, next_f = capture.read()
             else:
-                self.__frames.next = None
+                next_f = None
 
+            self.__frames = FrameInfo(prev, current, next_f)
             self.__current_video_frame += 1
 
         return self.__frames
 
 
     def on_end(self, progress_bar: tqdm) -> Optional[Pose]:
-        poses = super().on_end(progress_bar)
+        poses = super()._backward(progress_bar)
         # Reset the current frame....
-        super()._current_frame = 0
+        self._current_frame = 0
 
         # Run the selected detection algorithm:
         print("Looking for poorly labeled frames: ")
         relabel_frames = np.transpose(self.MODES[self.DETECTION_ALGORITHM](self.DETECTION_ARGS, poses))
-        relabel_frames = relabel_frames[np.argsort[relabel_frames[:, 0]]]
+        relabel_frames = relabel_frames[np.argsort(relabel_frames[:, 0])]
 
         # Ask user to label bad frames, correct them....
         print("Labeling frames: ")
@@ -232,12 +250,14 @@ class SupervisedViterbi(FastViterbi):
             bp_name = self.__bodyparts[int(bp // self._num_outputs)]
             bp_number = (bp % self._num_outputs) + 1
 
-            locations = (poses.get_x_at(frame, bp + off), poses.get_y_at(frame, bp + off) for off in [-1, 0, 1])
+            def limit(val):
+                return min(max(0, val), len(self._sparse_data) - 1)
+
+            locations = ((poses.get_x_at(limit(frame + off), bp), poses.get_y_at(limit(frame + off), bp)) for off in [-1, 0, 1])
 
             # Showing the point picker and getting user feedback...
             point_editor = PointPicker(f"Frame {frame}, {bp_name} {bp_number}", self.__TITLES, frames, locations)
-            point_editor.show()
-            point = point_editor.get_selected_point()
+            point = point_editor.show()
 
             if(point is None):
                 # If user didn't select a point, duplicate prior frame, or if we are on the first frame set it to None.
@@ -268,10 +288,9 @@ class SupervisedViterbi(FastViterbi):
         return self._backward(tqdm(total=self._num_frames))
 
 
-
     @classmethod
     def get_settings(cls) -> Union[List[Tuple[str, str, Any]], None]:
-        return super(cls).get_settings() + [
+        return super().get_settings() + [
             ("detection_algorithm", "A list of values, determines the detection algorithm to use and the arguments "
                                     "to pass to it. The available options are:\n"
                                     " - ['threshold', (optional float 0 < x < 1)]: Select frames that fall below a"

@@ -587,13 +587,14 @@ class FastViterbi(Predictor):
                     if (bpx is None):
                         continue
                     viterbi_data = viterbi_data * self._neg_gaussian_table[np.abs(coord_y - bpy), np.abs(coord_x - bpx)]
+                    viterbi_data = viterbi_data / np.sum(viterbi_data)
 
             # Get the max location index
             max_frame_loc = np.argmax(viterbi_data)
             max_edge_loc = np.argmax(self._edge_vals[r_counter, bp])
 
             # Gather all required fields...
-            y, x = coord_x[max_frame_loc], coord_y[max_frame_loc]
+            x, y = coord_x[max_frame_loc], coord_y[max_frame_loc]
             off_x, off_y = x_off[max_frame_loc], y_off[max_frame_loc]
             prob = viterbi_data[max_frame_loc]
             edge_x, edge_y = self._edge_coords[max_edge_loc]
@@ -602,7 +603,9 @@ class FastViterbi(Predictor):
             # If the edge is greater then the max point in frame, set prior point to (-1, -1) and pose output
             # probability to 0.
             if(prob < edge_prob):
-                prior_points.append((edge_x, edge_y, edge_prob))
+                normalized_prob = edge_prob / (np.sum(self._edge_vals[r_counter, bp]) + np.sum(viterbi_data))
+
+                prior_points.append((edge_x, edge_y, normalized_prob))
                 all_poses.set_at(r_counter, bp, (-1, -1), (0, 0), 0, 1)
 
                 if(self.NEGATE_ON):
@@ -618,7 +621,7 @@ class FastViterbi(Predictor):
                 if(self.NEGATE_ON):
                     bp_queue.append((x, y, normalized_prob))
 
-            self._viterbi_probs[r_counter][bp] = normalized_prob[2]
+            self._viterbi_probs[r_counter][bp] = normalized_prob
 
         # Drop the counter by 1
         r_counter -= 1
@@ -649,6 +652,7 @@ class FastViterbi(Predictor):
                             continue
                         viterbi_data = viterbi_data * self._neg_gaussian_table[np.abs(coord_y - bpy),
                                                                                np.abs(coord_x - bpx)]
+                        viterbi_data = viterbi_data / np.sum(viterbi_data)
 
 
                 is_in_frame, max_loc, max_point = self._get_prior_location(
@@ -681,8 +685,8 @@ class FastViterbi(Predictor):
                         bp_queue.append((None, None, None))
 
                 # Append point to current points....
-                self._viterbi_probs[r_counter][bp] = max_point[2]
                 current_points.append(max_point)
+                self._viterbi_probs[r_counter][bp] = max_point[2]
 
             # Set prior_points to current_points...
             prior_points = current_points

@@ -10,7 +10,6 @@ from abc import abstractmethod
 # Used for type hints
 from numpy import ndarray
 from typing import List, Union, Type, Tuple, Set, Sequence, Dict, Any, Callable
-from types import MethodType
 import tqdm
 
 # Used by get_predictor for loading plugins
@@ -411,7 +410,7 @@ class Pose:
         :param value_offset: An integer representing the offset of the desired values in stored data
         :return: Slice or integer, being the fixed indexing to actually get the body parts
         """
-        if(isinstance(index, int)):
+        if(isinstance(index, (int, np.integer))):
             # Since all data is all stored together, multiply by 3 and add the offset...
             return (index * 3) + value_offset
         elif(isinstance(index, slice)):
@@ -419,7 +418,7 @@ class Pose:
             start, end, step = index.indices(self._data.shape[1] // 3)
             return slice((start * 3) + value_offset, (end * 3) + value_offset, step * 3)
         else:
-            raise ValueError("Index is not of type slice or integer!")
+            raise ValueError(f"Index is not of type slice or integer! It is type '{type(index)}'!")
 
     # Represents point data, is a tuple of x, y data where x and y are numpy arrays or integers...
     PointData = Tuple[Union[int, ndarray], Union[int, ndarray]]
