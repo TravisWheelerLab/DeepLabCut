@@ -108,7 +108,6 @@ class PlotterArgMax(Predictor):
             self._vid_writer.write(img)
             self._current_frame += 1
 
-
         # Return argmax values for each frame...
         return scmap.get_poses_for(scmap.get_max_scmap_points(num_max=self._num_outputs))
 

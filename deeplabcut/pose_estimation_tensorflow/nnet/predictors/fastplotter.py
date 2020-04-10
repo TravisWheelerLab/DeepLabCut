@@ -31,8 +31,9 @@ class FastPlotterArgMax(Predictor):
         # Determines grid size of charts
         self._grid_width = int(math.ceil(math.sqrt(len(self._parts))))
         self._grid_height = int(math.ceil(len(self._parts) / self._grid_width))
+        print(self._grid_width, self._grid_height)
         # Stores opencv video writer...
-        self._vid_writer = None
+        self._vid_writer: cv2.VideoWriter = None
 
         # Name of the video file to save to
         final_video_name = settings["video_name"].replace("$VIDEO", Path(video_metadata["orig-video-path"]).stem)
@@ -79,8 +80,8 @@ class FastPlotterArgMax(Predictor):
         Compute all required measurements needed to render text/source maps to the correct locations, and also
         initialize the video writer...
         """
-        self._scmap_height = scmap_height
         self._scmap_width = scmap_width
+        self._scmap_height = scmap_height
 
         self._subplot_width = (self.PADDING * 2) + self._scmap_width
         total_subplot_text_height = self._subplot_font_height + self._subplot_baseline
@@ -89,7 +90,8 @@ class FastPlotterArgMax(Predictor):
         self._vid_width = self._grid_width * self._subplot_width
         self._vid_height = (self._grid_height * self._subplot_height) + (self._title_font_height + self._title_baseline)
 
-        self._canvas = np.zeros((self._vid_width, self._vid_height, 3), dtype=np.uint8)
+        self._canvas = np.zeros((self._vid_height, self._vid_width, 3), dtype=np.uint8)
+        print(self._vid_width, self._vid_height)
 
         self._vid_writer = cv2.VideoWriter(self.VIDEO_NAME, self.OUTPUT_CODEC, self.OUTPUT_FPS,
                                            (self._vid_width, self._vid_height))
@@ -97,10 +99,9 @@ class FastPlotterArgMax(Predictor):
 
     def _probs_to_grayscale(self, arr: np.ndarray) -> np.ndarray:
         """
-        Convert numpy probability array into a grayscale image of unsigned 8 bit integers. Also transposes array so the
-        indexing is width followed by height...
+        Convert numpy probability array into a grayscale image of unsigned 8 bit integers.
         """
-        return (np.transpose(arr) * 255).astype(dtype=np.uint8)
+        return (arr * 255).astype(dtype=np.uint8)
 
 
     def _logify(self, arr: np.ndarray) -> np.ndarray:
@@ -123,7 +124,7 @@ class FastPlotterArgMax(Predictor):
         Draws the title text to the video frame....
         """
         (width, __), __ = cv2.getTextSize(text, self.TITLE_FONT, self.TITLE_FONT_SIZE, self.FONT_THICKNESS)
-        x_in = max(((self._vid_width - width) / 2) - 1, 0)
+        x_in = max(int((self._vid_width - width) / 2), 0)
         y_in = self._title_font_height - 1
         cv2.putText(self._canvas, text, (x_in, y_in), self.TITLE_FONT, self.TITLE_FONT_SIZE, self.TITLE_COLOR,
                     self.FONT_THICKNESS)
@@ -146,11 +147,11 @@ class FastPlotterArgMax(Predictor):
         colormap_img = cv2.applyColorMap(grayscale_img, self.COLORMAP)
         # Insert the probability map...
         subplot_top_x, subplot_top_y = (x_upper_corner + self.PADDING) - 1, (y_upper_corner + self.PADDING) - 1
-        subplot_bottom_x, subplot_bottom_y = x_upper_corner + self._scmap_width, y_upper_corner + self._scmap_height
-        self._canvas[subplot_top_x:subplot_bottom_x, subplot_top_y:subplot_bottom_y] = colormap_img
+        subplot_bottom_x, subplot_bottom_y = subplot_top_x + self._scmap_width, subplot_top_y + self._scmap_height
+        self._canvas[subplot_top_y:subplot_bottom_y, subplot_top_x:subplot_bottom_x] = colormap_img
         # Now insert the text....
         (text_width, __), __ = cv2.getTextSize(bp_name, self.SUBPLOT_FONT, self.SUBPLOT_FONT_SIZE, self.FONT_THICKNESS)
-        x_text_root = x_upper_corner + max((self._subplot_width - text_width) / 2, 0)
+        x_text_root = x_upper_corner + max(int((self._subplot_width - text_width) / 2), 0)
         y_text_root = y_upper_corner + (self._subplot_height - self.PADDING)
         cv2.putText(self._canvas, bp_name, (x_text_root, y_text_root), self.SUBPLOT_FONT, self.SUBPLOT_FONT_SIZE,
                     self.SUBPLOT_COLOR, self.FONT_THICKNESS)
@@ -174,6 +175,7 @@ class FastPlotterArgMax(Predictor):
                 self._draw_subplot(self._parts[bp], subplot_x, subplot_y, scmap.get_prob_table(frame, bp))
 
             self._vid_writer.write(self._canvas)
+
             self._current_frame += 1
 
         # Return just like argmax...
@@ -182,6 +184,7 @@ class FastPlotterArgMax(Predictor):
     def on_end(self, progress_bar: tqdm.tqdm) -> Union[None, Pose]:
         self._vid_writer.release()
         return None
+
 
     @staticmethod
     def get_name() -> str:
@@ -203,12 +206,12 @@ class FastPlotterArgMax(Predictor):
                            "name of original video somewhere in the text.", "$VIDEO-fast-prob-dlc.mp4"),
             ("codec", "The codec to be used by the opencv library to save info to, typically a 4-byte string.", "MPEG"),
             ("use_log_scale", "Boolean, determines whether to apply log scaling to the frames in the video.", True),
-            ("title_font_size", "Integer, the font size of the main title", 20),
+            ("title_font_size", "Integer, the font size of the main title", 2),
             ("title_font", f"String, the cv2 font to be used in the title, options for this are:\n{font_options}",
-             "FONT_HERSHEY_SIMPLEX"),
-            ("subplot_font_size", "Integer, the font size of the titles of each subplot.", 14),
+             "FONT_HERSHEY_PLAIN"),
+            ("subplot_font_size", "Integer, the font size of the titles of each subplot.", 1),
             ("subplot_font", "String, the cv2 font used in the subplot titles, look at options for 'title_font'.",
-             "FONT_HERSHEY_SIMPLEX"),
+             "FONT_HERSHEY_PLAIN"),
             ("background_color", "Tuple of 3 integers, color of the background in BGR format", (255, 255, 255)),
             ("title_font_color", "Tuple of 3 integers, color of the title text in BGR format", (0, 0, 0)),
             ("subplot_font_color", "Tuple of 3 integers, color of the title text in BGR format", (0, 0, 0)),
