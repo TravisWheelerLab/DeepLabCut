@@ -35,7 +35,8 @@ class PlotterArgMax(Predictor):
         self._vid_writer = None
 
         # Name of the video file to save to
-        self.VIDEO_NAME = str((Path(video_metadata["h5-file-name"]).parent) / settings["video_name"])
+        final_video_name = settings["video_name"].replace("$VIDEO", Path(video_metadata["orig-video-path"]).stem)
+        self.VIDEO_NAME = str((Path(video_metadata["h5-file-name"]).parent) / final_video_name)
         # Output codec to save using
         self.OUTPUT_CODEC = cv2.VideoWriter_fourcc(*settings["codec"])
         # Frames per second to use for video
@@ -119,7 +120,8 @@ class PlotterArgMax(Predictor):
     @staticmethod
     def get_settings() -> Union[List[Tuple[str, str, Any]], None]:
         return [
-            ("video_name", "Name of the video file that plotting data will be saved to.", "prob-dlc.mp4"),
+            ("video_name", "Name of the video file that plotting data will be saved to. Can use $VIDEO to place the "
+                           "name of original video somewhere in the text.", "$VIDEO-prob-dlc.mp4"),
             ("codec", "The codec to be used by the opencv library to save info to, typically a 4-byte string.", "MPEG"),
             ("use_log_scale", "Boolean, determines whether to apply log scaling to the frames in the video.", True),
             ("3d_projection", "Boolean, determines if probability frames should be plotted in 3d.", False),
