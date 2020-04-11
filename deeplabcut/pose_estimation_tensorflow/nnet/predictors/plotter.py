@@ -70,6 +70,21 @@ class PlotterArgMax(Predictor):
                 ax.axis("off")
 
 
+    def _logify(self, arr: np.ndarray) -> np.ndarray:
+        """
+        Place the array in log scale, and then place the values between 0 and 1 using simple linear interpolation...
+        """
+        arr_logged = np.log(arr)
+        was_zero = np.isneginf(arr_logged)
+        not_zero = ~was_zero
+        low_val = np.min(arr_logged[not_zero])
+
+        arr_logged[not_zero] = (np.abs(low_val) - np.abs(arr_logged[not_zero])) / np.abs(low_val)
+        arr_logged[was_zero] = 0
+
+        return arr_logged
+
+
     def on_frames(self, scmap: TrackingData) -> Union[None, Pose]:
         for frame in range(scmap.get_frame_count()):
             # Plot all probability maps
@@ -83,12 +98,13 @@ class PlotterArgMax(Predictor):
                 if(self.PROJECT_3D):
                     x, y = np.arange(scmap.get_frame_width()), np.arange(scmap.get_frame_height())
                     x, y = np.meshgrid(x, y)
-                    z = np.log(scmap.get_prob_table(frame, bp)) if (self.LOG_SCALE) else scmap.get_prob_table(frame, bp)
+                    z = self._logify(scmap.get_prob_table(frame, bp)) if (self.LOG_SCALE) else \
+                        scmap.get_prob_table(frame, bp)
                     ax.plot_surface(x, y, z, cmap=self.COLOR_MAP)
                     z_range = ax.get_zlim()[1] - ax.get_zlim()[0]
                     ax.set_zlim(ax.get_zlim()[0], ax.get_zlim()[0] + (z_range * self.Z_SHRINK_F))
                 else:
-                    ax.pcolormesh(np.log(scmap.get_prob_table(frame, bp)) if (self.LOG_SCALE) else
+                    ax.pcolormesh(self._logify(scmap.get_prob_table(frame, bp)) if (self.LOG_SCALE) else
                                       scmap.get_prob_table(frame, bp), cmap=self.COLOR_MAP)
                 # This reverses the y-axis data, so as probability maps match the video...
                 ax.set_ylim(ax.get_ylim()[::-1])
