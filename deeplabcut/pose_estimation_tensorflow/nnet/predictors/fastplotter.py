@@ -17,7 +17,6 @@ class FastPlotterArgMax(Predictor):
     """
 
     TEST_TEXT = "".join(chr(i) for i in range(32, 127))
-    FONT_THICKNESS = 1
 
     def __init__(self, bodyparts: Union[List[str]], num_outputs: int, num_frames: int,
                  settings: Union[Dict[str, Any], None], video_metadata: Dict[str, Any]):
@@ -31,7 +30,6 @@ class FastPlotterArgMax(Predictor):
         # Determines grid size of charts
         self._grid_width = int(math.ceil(math.sqrt(len(self._parts))))
         self._grid_height = int(math.ceil(len(self._parts) / self._grid_width))
-        print(self._grid_width, self._grid_height)
         # Stores opencv video writer...
         self._vid_writer: cv2.VideoWriter = None
 
@@ -50,6 +48,7 @@ class FastPlotterArgMax(Predictor):
         self.TITLE_FONT_SIZE = settings["title_font_size"]
         self.SUBPLOT_FONT = font_dict[settings["subplot_font"]]
         self.SUBPLOT_FONT_SIZE = settings["subplot_font_size"]
+        self.FONT_THICKNESS = settings["font_thickness"]
         # Compute the height of the titles and subtitles...
         (__, self._title_font_height), self._title_baseline = cv2.getTextSize(self.TEST_TEXT, self.TITLE_FONT,
                                                                               self.TITLE_FONT_SIZE, self.FONT_THICKNESS)
@@ -62,6 +61,7 @@ class FastPlotterArgMax(Predictor):
         self.SUBPLOT_COLOR = settings["subplot_font_color"]
         colormap_dict = _load_cv2_colormaps()
         self.COLORMAP = colormap_dict[settings["colormap"]]
+        self.MULTIPLIER = settings["source_map_upscale"]
         # Store the padding...
         self.PADDING = settings["padding"]
 
@@ -80,8 +80,8 @@ class FastPlotterArgMax(Predictor):
         Compute all required measurements needed to render text/source maps to the correct locations, and also
         initialize the video writer...
         """
-        self._scmap_width = scmap_width
-        self._scmap_height = scmap_height
+        self._scmap_width = scmap_width * self.MULTIPLIER
+        self._scmap_height = scmap_height * self.MULTIPLIER
 
         self._subplot_width = (self.PADDING * 2) + self._scmap_width
         total_subplot_text_height = self._subplot_font_height + self._subplot_baseline
@@ -91,7 +91,6 @@ class FastPlotterArgMax(Predictor):
         self._vid_height = (self._grid_height * self._subplot_height) + (self._title_font_height + self._title_baseline)
 
         self._canvas = np.zeros((self._vid_height, self._vid_width, 3), dtype=np.uint8)
-        print(self._vid_width, self._vid_height)
 
         self._vid_writer = cv2.VideoWriter(self.VIDEO_NAME, self.OUTPUT_CODEC, self.OUTPUT_FPS,
                                            (self._vid_width, self._vid_height))
@@ -101,7 +100,8 @@ class FastPlotterArgMax(Predictor):
         """
         Convert numpy probability array into a grayscale image of unsigned 8 bit integers.
         """
-        return (arr * 255).astype(dtype=np.uint8)
+        return np.repeat(np.repeat((arr * 255).astype(dtype=np.uint8), self.MULTIPLIER, axis=1),
+                         self.MULTIPLIER, axis=0)
 
 
     def _logify(self, arr: np.ndarray) -> np.ndarray:
@@ -125,7 +125,7 @@ class FastPlotterArgMax(Predictor):
         """
         (width, __), __ = cv2.getTextSize(text, self.TITLE_FONT, self.TITLE_FONT_SIZE, self.FONT_THICKNESS)
         x_in = max(int((self._vid_width - width) / 2), 0)
-        y_in = self._title_font_height - 1
+        y_in = (self._title_font_height + self._title_baseline) - 1
         cv2.putText(self._canvas, text, (x_in, y_in), self.TITLE_FONT, self.TITLE_FONT_SIZE, self.TITLE_COLOR,
                     self.FONT_THICKNESS)
 
@@ -217,6 +217,8 @@ class FastPlotterArgMax(Predictor):
             ("subplot_font_color", "Tuple of 3 integers, color of the title text in BGR format", (0, 0, 0)),
             ("colormap", f"String, the cv2 colormap to use, options for this are:\n{colormap_options}",
              "COLORMAP_VIRIDIS"),
+            ("font_thickness", "Integer, the thickness of the font being drawn.", 1),
+            ("source_map_upscale", "Integer, The amount to upscale the probability maps.", 4),
             ("padding", "Integer, the padding to be applied around plots in pixels.", 10)
         ]
 
