@@ -30,7 +30,8 @@ class PlotterArgMax(Predictor):
         # Keeps track of how many frames
         self._current_frame = 0
         # Determines grid size of charts
-        self._grid_size = int(math.ceil(math.sqrt(len(self._parts))))
+        self._grid_width = int(math.ceil(math.sqrt(len(self._parts))))
+        self._grid_height = int(math.ceil(len(self._parts) / self._grid_width))
         # Stores opencv video writer...
         self._vid_writer = None
 
@@ -59,10 +60,10 @@ class PlotterArgMax(Predictor):
         if(self.PROJECT_3D):
             self.AXES_ARGS.update({'projection': '3d'})
             from mpl_toolkits.mplot3d import Axes3D
-            self._figure, self._axes = pyplot.subplots(self._grid_size, self._grid_size,
+            self._figure, self._axes = pyplot.subplots(self._grid_height, self._grid_width,
                                                        subplot_kw=self.AXES_ARGS, **self.FIGURE_ARGS)
         else:
-            self._figure, self._axes = pyplot.subplots(self._grid_size, self._grid_size, subplot_kw=self.AXES_ARGS,
+            self._figure, self._axes = pyplot.subplots(self._grid_height, self._grid_width, subplot_kw=self.AXES_ARGS,
                                                        **self.FIGURE_ARGS)
         # Hide all axis.....
         if(not self.AXIS_ON):
@@ -90,6 +91,7 @@ class PlotterArgMax(Predictor):
             # Plot all probability maps
             for bp, ax in zip(range(scmap.get_bodypart_count()), self._axes.flat):
                 ax.clear()
+                ax.set_aspect("equal")
                 if(not self.AXIS_ON):
                     ax.axis("off")
 
