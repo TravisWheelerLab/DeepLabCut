@@ -75,15 +75,16 @@ class PlotterArgMax(Predictor):
         """
         Place the array in log scale, and then place the values between 0 and 1 using simple linear interpolation...
         """
-        arr_logged = np.log(arr)
-        was_zero = np.isneginf(arr_logged)
-        not_zero = ~was_zero
-        low_val = np.min(arr_logged[not_zero])
+        with np.errstate(divide='ignore'):
+            arr_logged = np.log(arr)
+            was_zero = np.isneginf(arr_logged)
+            not_zero = ~was_zero
+            low_val = np.min(arr_logged[not_zero])
 
-        arr_logged[not_zero] = (np.abs(low_val) - np.abs(arr_logged[not_zero])) / np.abs(low_val)
-        arr_logged[was_zero] = 0
+            arr_logged[not_zero] = (np.abs(low_val) - np.abs(arr_logged[not_zero])) / np.abs(low_val)
+            arr_logged[was_zero] = 0
 
-        return arr_logged
+            return arr_logged
 
 
     def on_frames(self, scmap: TrackingData) -> Union[None, Pose]:

@@ -100,23 +100,23 @@ class FastPlotterArgMax(Predictor):
         """
         Convert numpy probability array into a grayscale image of unsigned 8 bit integers.
         """
-        return np.repeat(np.repeat((arr * 255).astype(dtype=np.uint8), self.MULTIPLIER, axis=1),
-                         self.MULTIPLIER, axis=0)
+        return (arr * 255).astype(dtype=np.uint8)
 
 
     def _logify(self, arr: np.ndarray) -> np.ndarray:
         """
         Place the array in log scale, and then place the values between 0 and 1 using simple linear interpolation...
         """
-        arr_logged = np.log(arr)
-        was_zero = np.isneginf(arr_logged)
-        not_zero = ~was_zero
-        low_val = np.min(arr_logged[not_zero])
+        with np.errstate(divide='ignore'):
+            arr_logged = np.log(arr)
+            was_zero = np.isneginf(arr_logged)
+            not_zero = ~was_zero
+            low_val = np.min(arr_logged[not_zero])
 
-        arr_logged[not_zero] = (np.abs(low_val) - np.abs(arr_logged[not_zero])) / np.abs(low_val)
-        arr_logged[was_zero] = 0
+            arr_logged[not_zero] = (np.abs(low_val) - np.abs(arr_logged[not_zero])) / np.abs(low_val)
+            arr_logged[was_zero] = 0
 
-        return arr_logged
+            return arr_logged
 
 
     def _draw_title(self, text: str):
@@ -144,7 +144,8 @@ class FastPlotterArgMax(Predictor):
 
         # Convert probabilities to a color image...
         grayscale_img = self._probs_to_grayscale(self._logify(prob_map) if(self.LOG_SCALE) else prob_map)
-        colormap_img = cv2.applyColorMap(grayscale_img, self.COLORMAP)
+        colormap_img = np.repeat(np.repeat(cv2.applyColorMap(grayscale_img, self.COLORMAP), self.MULTIPLIER, axis=1),
+                                 self.MULTIPLIER, axis=0)
         # Insert the probability map...
         subplot_top_x, subplot_top_y = (x_upper_corner + self.PADDING) - 1, (y_upper_corner + self.PADDING) - 1
         subplot_bottom_x, subplot_bottom_y = subplot_top_x + self._scmap_width, subplot_top_y + self._scmap_height
@@ -206,10 +207,10 @@ class FastPlotterArgMax(Predictor):
                            "name of original video somewhere in the text.", "$VIDEO-fast-prob-dlc.mp4"),
             ("codec", "The codec to be used by the opencv library to save info to, typically a 4-byte string.", "MPEG"),
             ("use_log_scale", "Boolean, determines whether to apply log scaling to the frames in the video.", True),
-            ("title_font_size", "Integer, the font size of the main title", 2),
+            ("title_font_size", "Integer, the font size of the main title", 3),
             ("title_font", f"String, the cv2 font to be used in the title, options for this are:\n{font_options}",
              "FONT_HERSHEY_PLAIN"),
-            ("subplot_font_size", "Integer, the font size of the titles of each subplot.", 1),
+            ("subplot_font_size", "Integer, the font size of the titles of each subplot.", 2),
             ("subplot_font", "String, the cv2 font used in the subplot titles, look at options for 'title_font'.",
              "FONT_HERSHEY_PLAIN"),
             ("background_color", "Tuple of 3 integers, color of the background in BGR format", (255, 255, 255)),
@@ -217,9 +218,9 @@ class FastPlotterArgMax(Predictor):
             ("subplot_font_color", "Tuple of 3 integers, color of the title text in BGR format", (0, 0, 0)),
             ("colormap", f"String, the cv2 colormap to use, options for this are:\n{colormap_options}",
              "COLORMAP_VIRIDIS"),
-            ("font_thickness", "Integer, the thickness of the font being drawn.", 1),
-            ("source_map_upscale", "Integer, The amount to upscale the probability maps.", 4),
-            ("padding", "Integer, the padding to be applied around plots in pixels.", 10)
+            ("font_thickness", "Integer, the thickness of the font being drawn.", 2),
+            ("source_map_upscale", "Integer, The amount to upscale the probability maps.", 8),
+            ("padding", "Integer, the padding to be applied around plots in pixels.", 20)
         ]
 
     @classmethod
