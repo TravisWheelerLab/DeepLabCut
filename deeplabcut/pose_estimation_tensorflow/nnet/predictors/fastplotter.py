@@ -5,6 +5,7 @@ import tqdm
 import math
 from pathlib import Path
 import numpy as np
+from numpy.lib.stride_tricks import as_strided
 
 from deeplabcut.pose_estimation_tensorflow.nnet.processing import Predictor, Pose, TrackingData
 
@@ -73,6 +74,9 @@ class FastPlotterArgMax(Predictor):
         self._scmap_height = None
         self._scmap_width = None
         self._canvas = None # The numpy array we will use for drawing...
+        # Will store colormap per run to avoid reallocating large arrays over and over....
+        self._colormap_temp = None
+        self._colormap_view = None
 
 
     def _compute_video_measurements(self, scmap_width: int, scmap_height: int):
@@ -94,6 +98,15 @@ class FastPlotterArgMax(Predictor):
 
         self._vid_writer = cv2.VideoWriter(self.VIDEO_NAME, self.OUTPUT_CODEC, self.OUTPUT_FPS,
                                            (self._vid_width, self._vid_height))
+        # Array which stores color maps temporarily... Takes advantage of numpy's abilities to make custom strides
+        # to access data... The colormap_view maps the
+        self._colormap_temp = np.zeros((self._scmap_height, self._scmap_width, 3), dtype=np.uint8)
+        shape, strides = self._colormap_temp.shape, self._colormap_temp.strides
+        view_shape = (self.MULTIPLIER, self.MULTIPLIER, shape[0] // self.MULTIPLIER, shape[1] // self.MULTIPLIER,
+                      shape[2])
+        view_strides = (strides[0], strides[1], strides[0] * self.MULTIPLIER, strides[1] * self.MULTIPLIER, strides[2])
+        self._colormap_view = as_strided(self._colormap_temp, shape=view_shape, strides=view_strides)
+        self._unscaled_cmap_temp = np.zeros((scmap_height, scmap_width, 3), dtype=np.uint8)
 
 
     def _probs_to_grayscale(self, arr: np.ndarray) -> np.ndarray:
@@ -144,12 +157,11 @@ class FastPlotterArgMax(Predictor):
 
         # Convert probabilities to a color image...
         grayscale_img = self._probs_to_grayscale(self._logify(prob_map) if(self.LOG_SCALE) else prob_map)
-        colormap_img = np.repeat(np.repeat(cv2.applyColorMap(grayscale_img, self.COLORMAP), self.MULTIPLIER, axis=1),
-                                 self.MULTIPLIER, axis=0)
+        self._colormap_view[:, :] = cv2.applyColorMap(grayscale_img, self.COLORMAP, self._unscaled_cmap_temp)
         # Insert the probability map...
         subplot_top_x, subplot_top_y = (x_upper_corner + self.PADDING) - 1, (y_upper_corner + self.PADDING) - 1
         subplot_bottom_x, subplot_bottom_y = subplot_top_x + self._scmap_width, subplot_top_y + self._scmap_height
-        self._canvas[subplot_top_y:subplot_bottom_y, subplot_top_x:subplot_bottom_x] = colormap_img
+        self._canvas[subplot_top_y:subplot_bottom_y, subplot_top_x:subplot_bottom_x] = self._colormap_temp
         # Now insert the text....
         (text_width, __), __ = cv2.getTextSize(bp_name, self.SUBPLOT_FONT, self.SUBPLOT_FONT_SIZE, self.FONT_THICKNESS)
         x_text_root = x_upper_corner + max(int((self._subplot_width - text_width) / 2), 0)
@@ -207,10 +219,10 @@ class FastPlotterArgMax(Predictor):
                            "name of original video somewhere in the text.", "$VIDEO-fast-prob-dlc.mp4"),
             ("codec", "The codec to be used by the opencv library to save info to, typically a 4-byte string.", "MPEG"),
             ("use_log_scale", "Boolean, determines whether to apply log scaling to the frames in the video.", False),
-            ("title_font_size", "Float, the font size of the main title", 1),
+            ("title_font_size", "Float, the font size of the main title", 2),
             ("title_font", f"String, the cv2 font to be used in the title, options for this are:\n{font_options}",
              "FONT_HERSHEY_SIMPLEX"),
-            ("subplot_font_size", "Float, the font size of the titles of each subplot.", 0.65),
+            ("subplot_font_size", "Float, the font size of the titles of each subplot.", 1.5),
             ("subplot_font", "String, the cv2 font used in the subplot titles, look at options for 'title_font'.",
              "FONT_HERSHEY_SIMPLEX"),
             ("background_color", "Tuple of 3 integers, color of the background in BGR format", (255, 255, 255)),
@@ -219,7 +231,7 @@ class FastPlotterArgMax(Predictor):
             ("colormap", f"String, the cv2 colormap to use, options for this are:\n{colormap_options}",
              "COLORMAP_VIRIDIS"),
             ("font_thickness", "Integer, the thickness of the font being drawn.", 2),
-            ("source_map_upscale", "Integer, The amount to upscale the probability maps.", 4),
+            ("source_map_upscale", "Integer, The amount to upscale the probability maps.", 8),
             ("padding", "Integer, the padding to be applied around plots in pixels.", 20)
         ]
 
