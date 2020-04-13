@@ -140,7 +140,7 @@ class PlotterArgMax(Predictor):
         return [
             ("video_name", "Name of the video file that plotting data will be saved to. Can use $VIDEO to place the "
                            "name of original video somewhere in the text.", "$VIDEO-prob-dlc.mp4"),
-            ("codec", "The codec to be used by the opencv library to save info to, typically a 4-byte string.", "MPEG"),
+            ("codec", "The codec to be used by the opencv library to save info to, typically a 4-byte string.", "mp4v"),
             ("use_log_scale", "Boolean, determines whether to apply log scaling to the frames in the video.", False),
             ("3d_projection", "Boolean, determines if probability frames should be plotted in 3d.", False),
             ("colormap", "String, determines the underlying colormap to be passed to matplotlib while plotting the "

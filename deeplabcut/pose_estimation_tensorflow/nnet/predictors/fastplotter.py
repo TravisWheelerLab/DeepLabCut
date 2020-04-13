@@ -217,7 +217,7 @@ class FastPlotterArgMax(Predictor):
         return [
             ("video_name", "Name of the video file that plotting data will be saved to. Can use $VIDEO to place the "
                            "name of original video somewhere in the text.", "$VIDEO-fast-prob-dlc.mp4"),
-            ("codec", "The codec to be used by the opencv library to save info to, typically a 4-byte string.", "MPEG"),
+            ("codec", "The codec to be used by the opencv library to save info to, typically a 4-byte string.", "mp4v"),
             ("use_log_scale", "Boolean, determines whether to apply log scaling to the frames in the video.", False),
             ("title_font_size", "Float, the font size of the main title", 2),
             ("title_font", f"String, the cv2 font to be used in the title, options for this are:\n{font_options}",
