@@ -48,9 +48,7 @@ class PointPicker:
     Allows user to pick a point location using matplotlib...
     """
 
-    APP = wx.App()
-
-    def __init__(self, main_title: str, titles, frames, predicted_locations):
+    def __init__(self, main_title: str, titles, frames, predicted_locations, app: wx.App):
         matplotlib.rcParams["toolbar"] = "toolmanager"
         self._frames = FrameInfo(*frames)
 
@@ -87,6 +85,7 @@ class PointPicker:
 
         self._points = FrameInfo(*circles)
 
+        self._app = app
         self._wx_frame = FigureFrameWxAgg(-1, self._figure)
 
         # Grab the toolbar and tool manager, we will hack in our own button using it!
@@ -117,7 +116,7 @@ class PointPicker:
             name = "Submit"
             description = "Submit point data now!"
 
-            APP = self.APP
+            APP = self._app
             WINDOW = self._wx_frame
 
             def trigger(self, sender, event, data=None):
@@ -149,10 +148,10 @@ class PointPicker:
         self._wx_frame.canvas.mpl_connect("button_release_event", release_evt)
 
     def show(self):
-        self.APP.SetExitOnFrameDelete(True)
+        self._app.SetExitOnFrameDelete(True)
         self._wx_frame.Show(True)
-        self.APP.SetTopWindow(self._wx_frame)
-        self.APP.MainLoop()
+        self._app.SetTopWindow(self._wx_frame)
+        self._app.MainLoop()
         return self.get_selected_point()
 
     def get_selected_point(self):
@@ -248,6 +247,7 @@ class SupervisedViterbi(FastViterbi):
         print("Labeling frames: ")
 
         cap = cv2.VideoCapture(str(self.__video_path))
+        app = wx.App()
 
         for frame, bp in tqdm(relabel_frames):
             frames = self._eat_frames(cap, frame)
@@ -261,7 +261,7 @@ class SupervisedViterbi(FastViterbi):
             locations = ((poses.get_x_at(limit(frame + off), bp), poses.get_y_at(limit(frame + off), bp)) for off in [-1, 0, 1])
 
             # Showing the point picker and getting user feedback...
-            point_editor = PointPicker(f"Frame {frame}, {bp_name} {bp_number}", self.__TITLES, frames, locations)
+            point_editor = PointPicker(f"Frame {frame}, {bp_name} {bp_number}", self.__TITLES, frames, locations, app)
             point = point_editor.show()
 
             if(point is None):

@@ -530,10 +530,10 @@ class FastViterbi(Predictor):
         edge_x, edge_y = self._edge_coords[:, 0], self._edge_coords[:, 1]
 
         # Compute probability of going from current point to some where in the prior frame...
-        prior_frame_viterbi = (cprob * self._gaussian_values_at(np.array(cx), np.array(cy), px, py).flatten() * pprob)
+        prior_frame_viterbi = (cprob * self._gaussian_values_at(np.array([cx]), np.array([cy]), px, py).flatten() * pprob)
 
         # Compute the probability of going from the current point to somewhere outside of the prior frame...
-        prior_edge_viterbi = (cprob * self._gaussian_values_at(np.array(cx), np.array(cy), edge_x, edge_y).flatten()
+        prior_edge_viterbi = (cprob * self._gaussian_values_at(np.array([cx]), np.array([cy]), edge_x, edge_y).flatten()
                               * prior_edge_probs)
 
         # Get max probability in list of possible transitions, for the frame and edge... Also normalize them...
