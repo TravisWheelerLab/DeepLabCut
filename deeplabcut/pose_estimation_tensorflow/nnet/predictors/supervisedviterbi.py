@@ -1,4 +1,7 @@
-
+import os
+# We first check if this is a headless environment, and if so don't even allow this module to be imported...
+if os.environ.get('DLClight', default=False) == 'True':
+    raise ImportError("Can't use this module in DLClight mode!")
 
 # For types in methods
 from typing import Union, List, Tuple, Any, Dict, Callable, Optional

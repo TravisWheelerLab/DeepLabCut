@@ -43,7 +43,7 @@ def load_plugin_classes(plugin_dir: ModuleType, plugin_metaclass: Type[T], do_re
             try:
                 sub_module = importer.find_module(package_name).load_module(package_name)
                 sys.modules[mod_name] = sub_module
-            except ImportError:
+            except Exception:
                 continue
         else:
             sub_module = sys.modules[mod_name]
