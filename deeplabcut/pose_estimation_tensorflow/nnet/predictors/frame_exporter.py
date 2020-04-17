@@ -26,14 +26,17 @@ Frame data block:
 	['FDAT'] -> Frame DATa
 	Now the data (num_frames entries):
 	    Each sub-frame entry (num_bp entries):
-            0000000[sparce_fmt] - Single bit, last bit of the byte, determines if this is in the
-                                      sparce frame format. Sparce frames only store non-zero locations.
-            Now Based on sparce_fmt flag:
+
+            0000000[sparse_fmt] - Single bit, Whether we are using the sparse format. See difference in storage below:
+            [data_length] - The length of the compressed/uncompressed frame data, 8 Bytes (long unsigned integer)
+
+            DATA (The below is compressed in the zlib format and must be uncompressed first). Based on 'sparse_fmt' flag:
                 If it is false, frames are stored as 4 byte float arrays, row-by-row, as below (x, y order below):
                     prob(1, 1), prob(2, 1), prob(3, 1), ....., prob(x, 1)
                     prob(1, 2), prob(2, 2), prob(3, 2), ....., prob(x, 2)
                     .....................................................
                     prob(1, y), prob(2, y), prob(3, y), ....., prob(x, y)
+                Length of the above data will be frame height * frame width...
                 Otherwise frames are stored in the format below
                     Sparce Frame Format (num_bp entries):
                         [num_entries] - Number of sparce entries in the frame, 8 bytes, unsigned integer.
@@ -41,11 +44,13 @@ Frame data block:
                         [arr x] - list of 4 byte unsigned integers of length num_entries. Stores x coordinates of probabilities.
                         [probs] - list of 4 byte floats, Stores probabilities specified at x and y coordinates above.
 """
+from io import BytesIO
 from pathlib import Path
 from typing import Union, List, Callable, Tuple, Any, Dict, BinaryIO
 import tqdm
 from deeplabcut.pose_estimation_tensorflow.nnet.processing import Predictor, Pose, TrackingData
 import numpy as np
+import zlib
 
 # REQUIRED DATA TYPES: (With little endian encoding...)
 luint8 = np.dtype(np.uint8).newbyteorder("<")
@@ -64,7 +69,7 @@ def to_bytes(obj: Any, dtype: np.dtype) -> bytes:
     :param dtype: The numpy data type to interpret the object as when converting to bytes.
     :return: A bytes object, representing the object obj as type dtype.
     """
-    return dtype.type(obj).to_bytes()
+    return dtype.type(obj).tobytes()
 
 
 class FrameExporter(Predictor):
@@ -98,6 +103,7 @@ class FrameExporter(Predictor):
         # Load in the settings....
         self.SPARSIFY = settings["sparsify"]
         self.THRESHOLD = settings["threshold"]
+        self.COMPRESSION_LEVEL = int(settings["compression_level"]) if(0 <= settings["compression_level"] <= 9) else 6
         # Initialize the frame counter...
         self._current_frame = 0
 
@@ -129,6 +135,7 @@ class FrameExporter(Predictor):
             self._out_file.write(to_bytes(len(body_bytes), luint16))
             self._out_file.write(body_bytes)
 
+
     # noinspection PyTypeChecker
     def _write_prob_map(self, frame: np.ndarray):
         if(self.SPARSIFY):
@@ -137,16 +144,26 @@ class FrameExporter(Predictor):
             probs = frame[(sparse_y, sparse_x)]
             # Check if we managed to strip out at least 2/3rds of the data, and if so write the frame using the sparse
             # format. Otherwise it is actually more memory efficient to just store the entire frame...
-            if((len(frame) / len(sparse_y)) >= self.MIN_SPARSE_SAVING_FACTOR):
+            if(len(frame.flat) >= (len(sparse_y) * self.MIN_SPARSE_SAVING_FACTOR)):
                 self._out_file.write(to_bytes(1, luint8))  # Sparse indicator flag
-                self._out_file.write(sparse_y.astype(luint32).tobytes('C'))  # Y coord data
-                self._out_file.write(sparse_x.astype(luint32).tobytes('C'))  # X coord data
-                self._out_file.write(probs.astype(lfloat).tobytes('C'))  # Probabilities
+                # COMPRESSED DATA:
+                buffer = BytesIO()
+                buffer.write(to_bytes(len(sparse_y), luint64))  # The length of the sparse data entries.
+                buffer.write(sparse_y.astype(luint32).tobytes('C'))  # Y coord data
+                buffer.write(sparse_x.astype(luint32).tobytes('C'))  # X coord data
+                buffer.write(probs.astype(lfloat).tobytes('C'))  # Probabilities
+                # Compress the sparse data and write it's length, followed by itself....
+                comp_data = zlib.compress(buffer.getvalue(), self.COMPRESSION_LEVEL)
+                self._out_file.write(to_bytes(len(comp_data), luint64))
+                self._out_file.write(comp_data)
 
                 return
         # If sparse optimization mode is off or the sparse format wasted more space, just write the entire frame...
         self._out_file.write(to_bytes(0, luint8))
-        self._out_file.write(frame.astype(lfloat).tobytes('C'))
+
+        comp_data = zlib.compress(frame.astype(lfloat).tobytes('C'))
+        self._out_file.write(to_bytes(len(comp_data), luint64))
+        self._out_file.write(comp_data)
 
 
     def on_frames(self, scmap: TrackingData) -> Union[None, Pose]:
@@ -161,6 +178,8 @@ class FrameExporter(Predictor):
             for j in range(scmap.get_bodypart_count()):
                 self._write_prob_map(scmap.get_prob_table(i, j))
 
+            self._current_frame += 1
+
         return scmap.get_poses_for(scmap.get_max_scmap_points(num_max=self._num_outputs))
 
 
@@ -169,17 +188,19 @@ class FrameExporter(Predictor):
         self._out_file.close()
         return None
 
-    @staticmethod
-    def get_name() -> str:
-        return "file_exporter"
+    @classmethod
+    def get_name(cls) -> str:
+        return "frame_exporter"
 
-    @staticmethod
-    def get_settings() -> Union[List[Tuple[str, str, Any]], None]:
+    @classmethod
+    def get_settings(cls) -> Union[List[Tuple[str, str, Any]], None]:
         return [
             ("sparsify", "Boolean, specify whether optimize and store the data in a sparse format when it "
                          "saves storage", True),
             ("threshold", "A Float between 0 and 1. The threshold used if sparsify is true. Any values which land below "
-                          "this threshold probability won't be included in the frame.", 1e-6)
+                          "this threshold probability won't be included in the frame.", 1e-6),
+            ("compression_level", "Integer, 0 through 9, determines the compression level. Higher compression level"
+                                  "means it takes longer to compress the data while. 0 is no compression", 6)
         ]
 
     @classmethod
