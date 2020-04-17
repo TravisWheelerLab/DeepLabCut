@@ -8,16 +8,18 @@ create plugins and use them in DeepLabCut:
 
 ### Default Plugins
 
-DeepLabCut currently comes with 2 "default" plugins:
+DeepLabCut currently comes with 3 "default" plugins:
  - "argmax": The default plugin, which makes predictions by simply finding the 
    point with the highest probability within the probability frame.
  - "plotterargmax": Makes predictions in the same exact way as "argmax",
-   but also outputs the probability maps to a video for visualization
+   but also outputs the probability maps to a video for visualization.
+ - "fast_plotterargmax": A much faster implementation of "plotterargmax", but
+   offers less customization and lacks a 3D mode.  
 
 ### Using Plugins
 
 Given an existing project and trained network, a prediction plugin can be 
-applied to a video by identifying the plugin in the to analyze_videos() 
+applied to a video by identifying the plugin in the to `analyze_videos()` 
 function call:
 
 ```python
@@ -160,20 +162,15 @@ class PrintAndPredict(Predictor):
         """
         return None
 
-    @staticmethod
-    def get_settings() -> Union[List[Tuple[str, str, Any]], None]:
+    @classmethod
+    def get_settings(cls) -> Union[List[Tuple[str, str, Any]], None]:
         """ Plugin offers no settings """
         return None
 
-    @staticmethod
-    def get_name() -> str:
+    @classmethod
+    def get_name(cls) -> str:
         """ Plugin Name goes here """
         return "example_plugin"
-
-    @staticmethod
-    def get_description() -> str:
-        """  """
-        return ("Prints frames to screen, nothing special...")
 
     @classmethod
     def get_tests(cls) -> Union[List[Callable[[], Tuple[bool, str, str]]], None]:
@@ -197,8 +194,8 @@ that are key to the workflow of a plugin.
                needed.
  - `on_frames`: This is executed every time a batch of probability 
                 frames is received from the DLC neural network. This is
-                where you plugin should do the majority of it's processing,
-                and return frames if this algorithm requires no post-processing.
+                where your plugin should do the majority of it's processing,
+                and return frames if the algorithm used requires no post-processing.
  - `on_end`: This is executed after all frames have been processed, and
              should be used by your plugin if it needs to perform 
              post processing or can only make predictions after receiving
