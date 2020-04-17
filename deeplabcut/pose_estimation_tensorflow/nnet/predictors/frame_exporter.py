@@ -173,10 +173,6 @@ class FrameExporter(Predictor):
     def get_name() -> str:
         return "file_exporter"
 
-    @classmethod
-    def get_description(cls) -> str:
-        return cls.__doc__.decode("utf-8").replace('\n', '').replace('    ', '')
-
     @staticmethod
     def get_settings() -> Union[List[Tuple[str, str, Any]], None]:
         return [
