@@ -5,7 +5,7 @@ the neural network (expensive) on a headless server or supercomputer, and then r
 feedback on a laptop or somewhere else. Below is the specification for the binary file format.
 
 DEEPLABCUT FRAMESTORE BINARY FORMAT: (All multi-byte fields are in little-endian format)
-['DLCF'] -> DeepLabCut Framestore - 4 Bytes (file magic)
+['DLCF'] -> DeepLabCut Frame store - 4 Bytes (file magic)
 
 Header:
 	['DLCH'] -> DeepLabCut Header
@@ -31,18 +31,20 @@ Frame data block:
             [data_length] - The length of the compressed/uncompressed frame data, 8 Bytes (long unsigned integer)
 
             DATA (The below is compressed in the zlib format and must be uncompressed first). Based on 'sparse_fmt' flag:
+
                 If it is false, frames are stored as 4 byte float arrays, row-by-row, as below (x, y order below):
                     prob(1, 1), prob(2, 1), prob(3, 1), ....., prob(x, 1)
                     prob(1, 2), prob(2, 2), prob(3, 2), ....., prob(x, 2)
                     .....................................................
                     prob(1, y), prob(2, y), prob(3, y), ....., prob(x, y)
                 Length of the above data will be frame height * frame width...
-                Otherwise frames are stored in the format below
-                    Sparce Frame Format (num_bp entries):
-                        [num_entries] - Number of sparce entries in the frame, 8 bytes, unsigned integer.
-                        [arr y] - list of 4 byte unsigned integers of length num_entries. Stores y coordinates of probabilities.
-                        [arr x] - list of 4 byte unsigned integers of length num_entries. Stores x coordinates of probabilities.
-                        [probs] - list of 4 byte floats, Stores probabilities specified at x and y coordinates above.
+                Otherwise frames are stored in the format below.
+
+                Sparce Frame Format (num_bp entries):
+                    [num_entries] - Number of sparce entries in the frame, 8 bytes, unsigned integer.
+                    [arr y] - list of 4 byte unsigned integers of length num_entries. Stores y coordinates of probabilities.
+                    [arr x] - list of 4 byte unsigned integers of length num_entries. Stores x coordinates of probabilities.
+                    [probs] - list of 4 byte floats, Stores probabilities specified at x and y coordinates above.
 """
 from io import BytesIO
 from pathlib import Path
