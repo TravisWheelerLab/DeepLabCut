@@ -246,7 +246,7 @@ def analyze_videos(config, videos, videotype='avi', shuffle=1, trainingsetindex=
     if(multi_output_format == "separate-bodyparts" and dlc_cfg['num_outputs'] > 1):
         # Format which allocates new bodyparts for each prediction by simply adding "__number" to the end of the part's
         # name.
-        print("Outputing predictions as seperate bodyparts...")
+        print("Outputting predictions as separate body parts...")
         suffixes = [f"__{i + 1}" for i in range(dlc_cfg["num_outputs"])]
         suffixes[0] = ""
         all_joints = [bp + s for bp in dlc_cfg["all_joints_names"] for s in suffixes]
