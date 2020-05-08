@@ -14,6 +14,10 @@ Header:
 	[frame_width] - The width of a frame. 4 Bytes (unsigned integer)
 	[frame_rate] - The frame rate, in frames per second. 8 Bytes (double float).
 	[stride] - The original video upscaling multiplier relative to current frame size. 4 Bytes (unsigned integer)
+	[orig_video_height] - The original video height. 4 Bytes (unsigned integer)
+	[orig_video_width] - The original video width. 4 Bytes (unsigned integer)
+	[crop_y1] - The y offset of the cropped box, set to max value to indicate no cropping...
+	[crop_x1] - The x offset of the cropped box, set to max value to indicate no cropping...
 
 Bodypart Names:
     ['DBPN'] -> Deeplabcut Body Part Names
@@ -45,11 +49,9 @@ Frame data block:
                     [arr x] - list of 4 byte unsigned integers of length num_entries. Stores x coordinates of probabilities.
                     [probs] - list of 4 byte floats, Stores probabilities specified at x and y coordinates above.
 """
-from collections import namedtuple
 from io import BytesIO
-from pathlib import Path
-from typing import Union, List, Callable, Tuple, Any, Dict, BinaryIO, Optional, cast
-from deeplabcut.pose_estimation_tensorflow.nnet.processing import Predictor, Pose, TrackingData
+from typing import List, Any, BinaryIO, Optional
+from deeplabcut.pose_estimation_tensorflow.nnet.processing import TrackingData
 import numpy as np
 import zlib
 
@@ -73,7 +75,7 @@ def to_bytes(obj: Any, dtype: np.dtype) -> bytes:
     return dtype.type(obj).tobytes()
 
 
-def from_bytes(data: bytes, dtype: np.dtype) -> np.dtype:
+def from_bytes(data: bytes, dtype: np.dtype) -> Any:
     """
     Converts bytes to a single object depending on the passed data type.
 
@@ -97,7 +99,7 @@ class DLCFSConstants:
     # Chunk names...
     HEADER_CHUNK_MAGIC = b"DLCH"
     # The header length, including the 'DLCH' magic
-    HEADER_LENGTH = 36
+    HEADER_LENGTH = 52
     BP_NAME_CHUNK_MAGIC = b"DBPN"
     FRAME_DATA_CHUNK_MAGIC = b"FDAT"
 
@@ -120,6 +122,23 @@ def string_list(lister: list):
     return lister
 
 
+def non_max_int32(val: luint32) -> Optional[int]:
+    """
+    Casts an object to a non-max integer, being None if it is the maximum value.
+
+    :param val: The value to cast...
+    :return: An integer, or None if the value equals the max possible integer.
+    """
+    if(val is None):
+        return None
+
+    val = int(val)
+
+    if(val == np.iinfo(luint32).max):
+        return None
+    else:
+        return val
+
 class DLCFSHeader():
     """
     Stores some basic info about a frame store...
@@ -130,7 +149,11 @@ class DLCFSHeader():
         ("frame_width", int, 0),
         ("frame_rate", float, 0),
         ("stride", int, 0),
-        ("bodypart_names", list of strings, [])
+        ("orig_video_height", int, 0),
+        ("orig_video_width", int, 0),
+        ("crop_offset_y", int or None if no cropping, None),
+        ("crop_offset_x", int or None if no cropping, None),
+        ("bodypart_names", list of strings, []),
     """
     SUPPORTED_FIELDS = [
         ("number_of_frames", int, 0),
@@ -138,6 +161,10 @@ class DLCFSHeader():
         ("frame_width", int, 0),
         ("frame_rate", float, 0),
         ("stride", int, 0),
+        ("orig_video_height", int, 0),
+        ("orig_video_width", int, 0),
+        ("crop_offset_y", non_max_int32, None),
+        ("crop_offset_x", non_max_int32, None),
         ("bodypart_names", string_list, [])
     ]
 
@@ -183,7 +210,7 @@ class DLCFSReader():
     A DeepLabCut Frame Store Reader. Allows for reading ".dlcf" files.
     """
 
-    HEADER_DATA_TYPES = [luint64, luint32, luint32, luint32, ldouble, luint32]
+    HEADER_DATA_TYPES = [luint64, luint32, luint32, luint32, ldouble, luint32, luint32, luint32, luint32, luint32]
     HEADER_OFFSETS = np.cumsum([4] + [dtype.itemsize for dtype in HEADER_DATA_TYPES])[:-1]
 
     def _assert_true(self, assertion: bool, error_msg: str):
@@ -199,31 +226,92 @@ class DLCFSReader():
 
         :param file: The binary file object to read a frame store from, file opened with 'rb'.
         """
-        self._assert_true(file.read(4) == DLCFSConstants.FILE_MAGIC,
-                          "File is not of the DLC Frame Store Format!")
+        self._assert_true(file.read(4) == DLCFSConstants.FILE_MAGIC, "File is not of the DLC Frame Store Format!")
         # Check for valid header...
         header_bytes = file.read(DLCFSConstants.HEADER_LENGTH)
         self._assert_true(header_bytes[0:4] == DLCFSConstants.HEADER_CHUNK_MAGIC,
                           "First Chunk must be the Header ('DLCH')!")
+
         # Read the header into a DLC header...
         parsed_data = [from_bytes(header_bytes[off:(off + dtype.itemsize)], dtype) for off, dtype in
                        zip(self.HEADER_OFFSETS, self.HEADER_DATA_TYPES)]
         self._header = DLCFSHeader(parsed_data[0], *parsed_data[2:])
         body_parts = [None] * parsed_data[1]
+
+        # Make sure cropping offsets land within the video if they are not None
+        if(self._header.crop_offset_y is not None):
+            crop_end = self._header.crop_offset_y + (self._header.frame_height * self._header.stride)
+            self._assert_true(crop_end < self._header.orig_video_height, "Cropping box in DLCF file is invalid!")
+        if(self._header.crop_offset_x is not None):
+            crop_end = self._header.crop_offset_x + (self._header.frame_width * self._header.stride)
+            self._assert_true(crop_end < self._header.orig_video_width, "Cropping box in DLCF file is invalid!")
+
         # Read the body part chunk...
         self._assert_true(file.read(4) == DLCFSConstants.BP_NAME_CHUNK_MAGIC, "Body part chunk must come second!")
         for i in range(len(body_parts)):
             length = from_bytes(file.read(2), luint16)
-            body_parts[i] = file.read(length).decode("utf-8")
+            body_parts[i] = file.read(int(length)).decode("utf-8")
         # Add the list of body parts to the header...
         self._header.bodypart_names = body_parts
 
+        # Now we assert that we have reached the frame data chunk
+        self._assert_true(file.read(4) == DLCFSConstants.FRAME_DATA_CHUNK_MAGIC, f"Frame data chunk not found!")
+
+        self._file = file
+        self._frames_processed = 0
+
     def get_header(self) -> DLCFSHeader:
+        """
+        Get the header of this DLC frame store file.
+
+        :return: A DLCFSHeader object, contains important metadata info from this frame store.
+        """
         return DLCFSHeader(*self._header.to_list())
 
-    def read_frames(self, num_frames: int) -> TrackingData:
-        # TODO: Write
-        pass
+    def has_next(self, num_frames: int = 1) -> bool:
+        """
+        Checks if this frame store object at least num_frames more frames to be read.
+
+        :param num_frames: An Integer, The number of frames to check the availability of, defaults to 1.
+        :return: True if there are at least num_frames more frames to be read, otherwise False.
+        """
+        return (self._frames_processed + num_frames) <= self._header.number_of_frames
+
+    def read_frames(self, num_frames: int = 1) -> TrackingData:
+        """
+        Read the next num_frames frames from this frame store object and returns a TrackingData object.
+
+        :param num_frames: The number of frames to read from the frame store.
+        :return: A TrackingData object storing all frame info that was stored in this DLC Frame Store....
+
+        :raises: An EOFError if more frames were requested then were available.
+        """
+        if(not self.has_next(num_frames)):
+            frames_left = self._header.number_of_frames - self._frames_processed
+            raise EOFError(f"Only '{frames_left}' were available, and '{num_frames}' were requested.")
+
+        self._frames_processed += num_frames
+        __, frame_h, frame_w, __, stride, bp_lst = self._header.to_list()[:6]
+
+        track_data = TrackingData.empty_tracking_data(num_frames, len(bp_lst), frame_w, frame_h, stride)
+
+        for frame_idx in range(track_data.get_frame_count()):
+            for bp_idx in range(track_data.get_bodypart_count()):
+                sparse_fmt_flag = (from_bytes(self._file.read(1), luint8) & 1) == 1
+                data = zlib.decompress(self._file.read(int(from_bytes(self._file.read(8), luint64))))
+
+                if(sparse_fmt_flag):
+                    entry_len = from_bytes(data[:8], luint64)
+                    sparse_y = np.frombuffer(data[8:], dtype=luint32, count=entry_len)
+                    sparse_x = np.frombuffer(data[8 + (luint32.itemsize * entry_len):], dtype=luint32, count=entry_len)
+                    probs = np.frombuffer(data[8 + (2 * luint32.itemsize * entry_len):], dtype=lfloat, count=entry_len)
+
+                    track_data.get_prob_table(frame_idx, bp_idx)[sparse_y, sparse_x] = probs
+                else:
+                    track_data.get_prob_table(frame_idx, bp_idx)[:] = np.reshape(np.frombuffer(data[8:], dtype=lfloat),
+                                                                                 (frame_h, frame_w))
+
+        return track_data
 
 
 class DLCFSWriter():
@@ -247,7 +335,7 @@ class DLCFSWriter():
         self._header = header
         self._threshold = threshold if (threshold is None or 0 <= threshold <= 1) else 1e6
         self._compression_level = compression_level if(0 <= compression_level <= 9) else 6
-        self._current_frame = -1
+        self._current_frame = 0
 
         # Write the file magic...
         self._out_file.write(DLCFSConstants.FILE_MAGIC)
@@ -259,6 +347,13 @@ class DLCFSWriter():
         self._out_file.write(to_bytes(header.frame_width, luint32))  # The width of each frame
         self._out_file.write(to_bytes(header.frame_rate, ldouble))  # The frames per second
         self._out_file.write(to_bytes(header.stride, luint32))  # The video upscaling factor
+        # Original video height and width.
+        self._out_file.write(to_bytes(header.orig_video_height, luint32))
+        self._out_file.write(to_bytes(header.orig_video_width, luint32))
+        # The cropping (y, x) offset, or the max integer values if there is no cropping box...
+        max_val = np.iinfo(luint32).max
+        self._out_file.write(to_bytes(max_val if(header.crop_offset_y is None) else header.crop_offset_y, luint32))
+        self._out_file.write(to_bytes(max_val if(header.crop_offset_x is None) else header.crop_offset_x, luint32))
 
         # Now we write the body part name chunk:
         self._out_file.write(DLCFSConstants.BP_NAME_CHUNK_MAGIC)
@@ -279,7 +374,7 @@ class DLCFSWriter():
         """
         # Some checks to make sure tracking data parameters match those set in the header:
         self._current_frame += data.get_frame_count()
-        if(self._current_frame >= self._header.number_of_frames):
+        if(self._current_frame > self._header.number_of_frames):
             raise ValueError(f"Data Overflow! '{self._header.number_of_frames}' frames expected, tried to write "
                              f"'{self._current_frame + 1}' frames.")
 

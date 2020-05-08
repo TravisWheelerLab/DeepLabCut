@@ -224,7 +224,7 @@ def analyze_videos(config, videos, videotype='avi', shuffle=1, trainingsetindex=
 
     # Update number of outputs and adjust pandas indices
     dlc_cfg['num_outputs'] = max(1, cfg.get('num_outputs', dlc_cfg.get('num_outputs', 1))
-                                    if(num_outputs is None) else num_outputs)
+                                    if(num_outputs is None) else int(num_outputs))
 
     # Check and make sure that this predictor supports multi output if we are currently in that mode...
     if((dlc_cfg["num_outputs"] > 1) and (not predictor_cls.supports_multi_output())):
@@ -338,7 +338,7 @@ def GetVideoBatch(cap, batch_size, cfg, frame_store) -> int:
 def GetPoseAll(cfg, dlc_cfg, sess, inputs, outputs, cap, nframes, batchsize, predictor):
     """ Gets the poses for any batch size, including batch size of only 1 """
     # Create a numpy array to hold all pose prediction data...
-    pose_prediction_data = np.zeros((nframes, 3 * len(dlc_cfg["all_joints_names"] * dlc_cfg["num_outputs"])))
+    pose_prediction_data = np.zeros((nframes, 3 * len(dlc_cfg["all_joints_names"]) * dlc_cfg["num_outputs"]))
 
     pbar = tqdm(total=nframes)
 
@@ -682,7 +682,8 @@ def AnalyzeVideo(video, DLCscorer, DLCscorerlegacy, trainFraction, cfg, dlc_cfg,
                     "duration": duration,
                     "size": size,
                     "h5-file-name": dataname,
-                    "orig-video-path": video
+                    "orig-video-path": video,
+                    "cropping-offset": (int(cfg["y1"]), int(cfg["x1"])) if(cfg["cropping"]) else None
                 }
 
                 # Create a predictor plugin instance...
@@ -727,7 +728,6 @@ def AnalyzeVideo(video, DLCscorer, DLCscorerlegacy, trainFraction, cfg, dlc_cfg,
         auxiliaryfunctions.SaveData(PredictedData[:nframes,:], metadata, dataname, pdindex, range(nframes), save_as_csv)
 
     return DLCscorer
-
 
 def GetPosesofFrames(cfg,dlc_cfg, sess, inputs, outputs,directory,framelist,nframes,batchsize,rgb):
     ''' Batchwise prediction of pose for frame list in directory'''

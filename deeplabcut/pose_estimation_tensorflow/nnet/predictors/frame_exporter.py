@@ -25,11 +25,16 @@ class FrameExporter(Predictor):
         self._num_frames = num_frames
         self._bodyparts = bodyparts
         self._video_metadata = video_metadata
+
+        self._crop_off = self._video_metadata["cropping-offset"]
+        self._crop_off = (None, None) if(self._crop_off is None) else self._crop_off
+
         self._num_outputs = num_outputs
         self._frame_writer = None
         # Making the output file...
         orig_h5_path = Path(video_metadata["h5-file-name"])
-        self._out_file: BinaryIO = (orig_h5_path.parent / (orig_h5_path.stem + ".dlcf")).open("wb")
+        vid_path = Path(video_metadata["orig-video-path"])
+        self._out_file: BinaryIO = (orig_h5_path.parent / (vid_path.name + "~DATA.dlcf")).open("wb")
         # Load in the settings....
         self.SPARSIFY = settings["sparsify"]
         self.THRESHOLD = settings["threshold"]
@@ -42,7 +47,8 @@ class FrameExporter(Predictor):
         # If we are just starting, write the header, body part names chunk, and magic for frame data chunk...
         if(self._current_frame == 0):
             header = DLCFSHeader(self._num_frames, scmap.get_frame_height(), scmap.get_frame_width(),
-                                 self._video_metadata["fps"], scmap.get_down_scaling(), self._bodyparts)
+                                 self._video_metadata["fps"], scmap.get_down_scaling(),
+                                 *self._video_metadata["size"], *self._crop_off, self._bodyparts)
             print(header)
 
             self._frame_writer = DLCFSWriter(self._out_file, header, self.THRESHOLD if(self.SPARSIFY) else None,
@@ -72,7 +78,7 @@ class FrameExporter(Predictor):
             ("threshold", "A Float between 0 and 1. The threshold used if sparsify is true. Any values which land below "
                           "this threshold probability won't be included in the frame.", 1e-6),
             ("compression_level", "Integer, 0 through 9, determines the compression level. Higher compression level"
-                                  "means it takes longer to compress the data while. 0 is no compression", 6)
+                                  "means it takes longer to compress the data, while 0 is no compression", 6)
         ]
 
     @classmethod
