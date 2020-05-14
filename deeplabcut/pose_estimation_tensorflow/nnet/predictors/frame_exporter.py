@@ -4,7 +4,6 @@ be passed back into DeepLabCut again to perform frame predictions later. This al
 the neural network (expensive) on a headless server or supercomputer, and then run through a predictor with gui
 feedback on a laptop or somewhere else.
 """
-from io import BytesIO
 from pathlib import Path
 from typing import Union, List, Callable, Tuple, Any, Dict, BinaryIO
 import tqdm
@@ -76,7 +75,7 @@ class FrameExporter(Predictor):
             ("sparsify", "Boolean, specify whether optimize and store the data in a sparse format when it "
                          "saves storage", True),
             ("threshold", "A Float between 0 and 1. The threshold used if sparsify is true. Any values which land below "
-                          "this threshold probability won't be included in the frame.", 1e-6),
+                          "this threshold probability won't be included in the frame.", 1e-7),
             ("compression_level", "Integer, 0 through 9, determines the compression level. Higher compression level"
                                   "means it takes longer to compress the data, while 0 is no compression", 6)
         ]

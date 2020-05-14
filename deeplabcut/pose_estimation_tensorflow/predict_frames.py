@@ -75,7 +75,7 @@ def analyze_frame_store(config_path: Pathy, frame_stores: Union[Iterable[Pathy],
         raise NotImplementedError("The selected predictor plugin doesn't support multiple outputs!!!")
 
     for frame_store_path, video_path in zip(frame_stores, video_files):
-        _analyze_frame_store(cfg, frame_store_path, str(video_path), dlc_scorer, dlc_scorer_legacy, predictor_cls,
+        _analyze_frame_store(cfg, frame_store_path, video_path, dlc_scorer, dlc_scorer_legacy, predictor_cls,
                              multi_output_format, num_outputs, train_frac, save_as_csv)
 
     print("Analysis and Predictions are Done! Now your research can truly start!")
@@ -89,9 +89,11 @@ def _resolve_videos(frame_store_paths: List[Path], video_folders: Optional[List[
     """
     video_paths = [None] * len(frame_store_paths)
     expected_video_names = {"~".join(path.stem.split("~")[:-1]): idx for idx, path in enumerate(frame_store_paths)}
+    expected_video_names = {name: idx for name, idx in expected_video_names.items() if(name.strip() != "")}
+    print(expected_video_names)
 
     # If the user passed video folders to check, check them, searching for all matching videos with the same name.
-    if(video_paths is not None):
+    if(video_folders is not None):
         for path in video_folders:
             if(path.is_dir()):
                 for subpath in path.iterdir():
@@ -100,9 +102,11 @@ def _resolve_videos(frame_store_paths: List[Path], video_folders: Optional[List[
 
     # Check if the video exists in the same folder as the .dlcf, if so add it. Overrides video folder search above...
     for idx, path in enumerate(frame_store_paths):
-        suspect_video = (path.parent) / ("~".join(path.stem.split("~")[:-1]))
-        if(suspect_video.exists()):
-            video_paths[idx] = suspect_video
+        name = "~".join(path.stem.split("~")[:-1])
+        if(name.strip() != ""):
+            suspect_video = (path.parent) / (name)
+            if(suspect_video.exists()):
+                video_paths[idx] = suspect_video
 
     return video_paths
 
@@ -157,8 +161,10 @@ def _analyze_frame_store(cfg: dict, frame_store_path: Path, video_name: Optional
                          dlc_scorer_legacy: str, predictor_cls: Type[Predictor], multi_output_format: str,
                          num_outputs: int, train_frac: str, save_as_csv: bool) -> str:
     # Check if the data was analyzed yet...
+    v_name_sanitized = Path(video_name).resolve().stem if(video_name is not None) else "unknownVideo"
+    print(v_name_sanitized)
     not_analyzed, data_name, dlc_scorer = auxiliaryfunctions.CheckifNotAnalyzed(str(frame_store_path.parent),
-                                                                                video_name, dlc_scorer,
+                                                                                v_name_sanitized, dlc_scorer,
                                                                                 dlc_scorer_legacy)
 
     if(not_analyzed):

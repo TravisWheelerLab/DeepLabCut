@@ -43,8 +43,8 @@ Frame data block:
                 Length of the above data will be frame height * frame width...
                 Otherwise frames are stored in the format below.
 
-                Sparce Frame Format (num_bp entries):
-                    [num_entries] - Number of sparce entries in the frame, 8 bytes, unsigned integer.
+                Sparse Frame Format (num_bp entries):
+                    [num_entries] - Number of sparse entries in the frame, 8 bytes, unsigned integer.
                     [arr y] - list of 4 byte unsigned integers of length num_entries. Stores y coordinates of probabilities.
                     [arr x] - list of 4 byte unsigned integers of length num_entries. Stores x coordinates of probabilities.
                     [probs] - list of 4 byte floats, Stores probabilities specified at x and y coordinates above.
@@ -291,7 +291,8 @@ class DLCFSReader():
             raise EOFError(f"Only '{frames_left}' were available, and '{num_frames}' were requested.")
 
         self._frames_processed += num_frames
-        __, frame_h, frame_w, __, stride, bp_lst = self._header.to_list()[:6]
+        __, frame_h, frame_w, __, stride = self._header.to_list()[:5]
+        bp_lst = self._header.bodypart_names
 
         track_data = TrackingData.empty_tracking_data(num_frames, len(bp_lst), frame_w, frame_h, stride)
 
@@ -301,7 +302,7 @@ class DLCFSReader():
                 data = zlib.decompress(self._file.read(int(from_bytes(self._file.read(8), luint64))))
 
                 if(sparse_fmt_flag):
-                    entry_len = from_bytes(data[:8], luint64)
+                    entry_len = int(from_bytes(data[:8], luint64))
                     sparse_y = np.frombuffer(data[8:], dtype=luint32, count=entry_len)
                     sparse_x = np.frombuffer(data[8 + (luint32.itemsize * entry_len):], dtype=luint32, count=entry_len)
                     probs = np.frombuffer(data[8 + (2 * luint32.itemsize * entry_len):], dtype=lfloat, count=entry_len)
