@@ -30,7 +30,9 @@ Frame data block:
 	Now the data (num_frames entries):
 	    Each sub-frame entry (num_bp entries):
 
-            0000000[sparse_fmt] - Single bit, Whether we are using the sparse format. See difference in storage below:
+            Single Byte: 000000[offsets_included][sparse_fmt]:
+                [sparse_fmt]- Single bit, whether we are using the sparse format. See difference in storage below:
+                [offsets_included] - Single bis, whether we have offset data included. See difference in storage below:
             [data_length] - The length of the compressed/uncompressed frame data, 8 Bytes (long unsigned integer)
 
             DATA (The below is compressed in the zlib format and must be uncompressed first). Based on 'sparse_fmt' flag:
@@ -41,6 +43,18 @@ Frame data block:
                     .....................................................
                     prob(1, y), prob(2, y), prob(3, y), ....., prob(x, y)
                 Length of the above data will be frame height * frame width...
+                if [offsets_included] == 1:
+                    Then 2 more maps equivalent to the above store the offset within the map when converting back
+                    to video:
+                        off_y(1, 1), off_y(2, 1), off_y(3, 1), ....., off_y(x, 1)
+                        off_y(1, 2), off_y(2, 2), off_y(3, 2), ....., off_y(x, 2)
+                        .........................................................
+                        off_y(1, y), off_y(2, y), off_y(3, y), ....., off_y(x, y)
+
+                        off_x(1, 1), off_x(2, 1), off_x(3, 1), ....., off_x(x, 1)
+                        off_x(1, 2), off_x(2, 2), off_x(3, 2), ....., off_x(x, 2)
+                        .........................................................
+                        off_x(1, y), off_x(2, y), off_x(3, y), ....., off_x(x, y)
                 Otherwise frames are stored in the format below.
 
                 Sparse Frame Format (num_bp entries):
@@ -48,9 +62,12 @@ Frame data block:
                     [arr y] - list of 4 byte unsigned integers of length num_entries. Stores y coordinates of probabilities.
                     [arr x] - list of 4 byte unsigned integers of length num_entries. Stores x coordinates of probabilities.
                     [probs] - list of 4 byte floats, Stores probabilities specified at x and y coordinates above.
+                    if [offsets_included] == 1:
+                        [off y] - list of 4 byte floats, stores y offset within the block of pixels.
+                        [off x] - list of 4 byte floats, stores x offset within the block of pixels.
 """
 from io import BytesIO
-from typing import List, Any, BinaryIO, Optional
+from typing import List, Any, BinaryIO, Optional, Tuple
 from deeplabcut.pose_estimation_tensorflow.nnet.processing import TrackingData
 import numpy as np
 import zlib
@@ -277,6 +294,26 @@ class DLCFSReader():
         """
         return (self._frames_processed + num_frames) <= self._header.number_of_frames
 
+    @classmethod
+    def _parse_flag_byte(cls, byte: luint8) -> Tuple[bool, bool]:
+        """ Returns if it is of the sparse format, followed by if it includes offset data... """
+        return ((byte & 1) == 1, ((byte >> 1) & 1) == 1)
+
+    @classmethod
+    def _take_array(cls, data: bytes, dtype: np.dtype, count: int) -> Tuple[bytes, np.ndarray]:
+        """ Reads a numpy array from the byte array, returning the leftover data and the array. """
+        if(count <= 0):
+            raise ValueError("Can't have a negative amount of entries....")
+        return (data[dtype.itemsize * count:], np.frombuffer(data, dtype=dtype, count=count))
+
+    @classmethod
+    def _init_offset_data(cls, track_data: TrackingData):
+        if (track_data.get_offset_map() is None):
+            # If tracking data is currently None, we need to create an empty array to store all data.
+            shape = (track_data.get_frame_count(), track_data.get_frame_height(), track_data.get_frame_width(),
+                     track_data.get_bodypart_count(), 2)
+            track_data.set_offset_map(np.zeros(shape, dtype=lfloat))
+
     def read_frames(self, num_frames: int = 1) -> TrackingData:
         """
         Read the next num_frames frames from this frame store object and returns a TrackingData object.
@@ -298,19 +335,43 @@ class DLCFSReader():
 
         for frame_idx in range(track_data.get_frame_count()):
             for bp_idx in range(track_data.get_bodypart_count()):
-                sparse_fmt_flag = (from_bytes(self._file.read(1), luint8) & 1) == 1
+                sparse_fmt_flag, has_offsets_flag = self._parse_flag_byte(from_bytes(self._file.read(1), luint8))
                 data = zlib.decompress(self._file.read(int(from_bytes(self._file.read(8), luint64))))
 
                 if(sparse_fmt_flag):
                     entry_len = int(from_bytes(data[:8], luint64))
-                    sparse_y = np.frombuffer(data[8:], dtype=luint32, count=entry_len)
-                    sparse_x = np.frombuffer(data[8 + (luint32.itemsize * entry_len):], dtype=luint32, count=entry_len)
-                    probs = np.frombuffer(data[8 + (2 * luint32.itemsize * entry_len):], dtype=lfloat, count=entry_len)
+                    data = data[8:]
+                    data, sparse_y = self._take_array(data, dtype=luint32, count=entry_len)
+                    data, sparse_x = self._take_array(data, dtype=luint32, count=entry_len)
+                    data, probs = self._take_array(data, dtype=lfloat, count=entry_len)
 
-                    track_data.get_prob_table(frame_idx, bp_idx)[sparse_y, sparse_x] = probs
+                    if(has_offsets_flag): # If offset flag is set to true, load in offset data....
+                        self._init_offset_data(track_data)
+
+                        data, off_y = self._take_array(data, dtype=lfloat, count=entry_len)
+                        data, off_x = self._take_array(data, dtype=lfloat, count=entry_len)
+                        track_data.get_offset_map()[frame_idx, sparse_y, sparse_x, bp_idx, 1] = off_y
+                        track_data.get_offset_map()[frame_idx, sparse_y, sparse_x, bp_idx, 0] = off_x
+                    else:
+                        track_data.set_offset_map(None)
+
+                    track_data.get_prob_table(frame_idx, bp_idx)[sparse_y, sparse_x] = probs # Set probability data...
                 else:
-                    track_data.get_prob_table(frame_idx, bp_idx)[:] = np.reshape(np.frombuffer(data[8:], dtype=lfloat),
-                                                                                 (frame_h, frame_w))
+                    data, probs = self._take_array(data, dtype=lfloat, count=frame_w * frame_h)
+                    probs = np.reshape(probs, (frame_h, frame_w))
+
+                    if(has_offsets_flag):
+                        self._init_offset_data(track_data)
+
+                        data, off_y = self._take_array(data, dtype=lfloat, count=frame_h * frame_w)
+                        data, off_x = self._take_array(data, dtype=lfloat, count=frame_h * frame_w)
+                        off_y = np.reshape(off_y, (frame_h, frame_w))
+                        off_x = np.reshape(off_x, (frame_h, frame_w))
+
+                        track_data.get_offset_map()[frame_idx, :, :, bp_idx, 1] = off_y
+                        track_data.get_offset_map()[frame_idx, :, :, bp_idx, 0] = off_x
+
+                    track_data.get_prob_table(frame_idx, bp_idx)[:] = probs
 
         return track_data
 
@@ -367,6 +428,9 @@ class DLCFSWriter():
         self._out_file.write(DLCFSConstants.FRAME_DATA_CHUNK_MAGIC)
 
 
+    def make_flag_byte(self, is_sparse: bool, has_offsets: bool) -> int:
+        return (is_sparse) | (has_offsets << 1)
+
     def write_data(self, data: TrackingData):
         """
         Write the following frames to the file.
@@ -386,20 +450,34 @@ class DLCFSWriter():
         for frm_idx in range(data.get_frame_count()):
             for bp in range(data.get_bodypart_count()):
                 frame = data.get_prob_table(frm_idx, bp)
+                offset_table = data.get_offset_map()
+
+                if (offset_table is not None):
+                    off_y = offset_table[frm_idx, :, :, bp, 1]
+                    off_x = offset_table[frm_idx, :, :, bp, 0]
+                else:
+                    off_y = None
+                    off_x = None
+
                 if(self._threshold is not None):
                     # Sparsify the data by removing everything below the threshold...
                     sparse_y, sparse_x = np.nonzero(frame > self._threshold)
                     probs = frame[(sparse_y, sparse_x)]
+
                     # Check if we managed to strip out at least 2/3rds of the data, and if so write the frame using the
                     # sparse format. Otherwise it is actually more memory efficient to just store the entire frame...
                     if(len(frame.flat) >= (len(sparse_y) * DLCFSConstants.MIN_SPARSE_SAVING_FACTOR)):
-                        self._out_file.write(to_bytes(1, luint8))  # Sparse indicator flag
+                        # Sparse indicator flag and the offsets included flag...
+                        self._out_file.write(to_bytes(True | ((offset_table is not None) << 1), luint8))
                         # COMPRESSED DATA:
                         buffer = BytesIO()
                         buffer.write(to_bytes(len(sparse_y), luint64))  # The length of the sparse data entries.
                         buffer.write(sparse_y.astype(luint32).tobytes('C'))  # Y coord data
                         buffer.write(sparse_x.astype(luint32).tobytes('C'))  # X coord data
                         buffer.write(probs.astype(lfloat).tobytes('C'))  # Probabilities
+                        if(offset_table is not None): # If offset table exists, write y offsets and then x offsets.
+                            buffer.write(off_y[(sparse_y, sparse_x)].astype(lfloat).tobytes('C'))
+                            buffer.write(off_x[(sparse_y, sparse_x)].astype(lfloat).tobytes('C'))
                         # Compress the sparse data and write it's length, followed by itself....
                         comp_data = zlib.compress(buffer.getvalue(), self._compression_level)
                         self._out_file.write(to_bytes(len(comp_data), luint64))
@@ -408,9 +486,15 @@ class DLCFSWriter():
                         continue
                 # If sparse optimization mode is off or the sparse format wasted more space, just write the entire
                 # frame...
-                self._out_file.write(to_bytes(0, luint8))
+                self._out_file.write(to_bytes(False | ((offset_table is not None) << 1), luint8))
 
-                comp_data = zlib.compress(frame.astype(lfloat).tobytes('C'))
+                buffer = BytesIO()
+                buffer.write(frame.astype(lfloat).tobytes('C')) # The probability frame...
+                if(offset_table is not None): # Y, then X offset data if it exists...
+                    buffer.write(off_y.astype(lfloat).tobytes('C'))
+                    buffer.write(off_x.astype(lfloat).tobytes('C'))
+
+                comp_data = zlib.compress(buffer.getvalue())
                 self._out_file.write(to_bytes(len(comp_data), luint64))
                 self._out_file.write(comp_data)
 
