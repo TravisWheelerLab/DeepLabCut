@@ -7,7 +7,7 @@ https://github.com/AlexEMG/DeepLabCut/blob/master/AUTHORS
 Licensed under GNU Lesser General Public License v3.0
 
 """
-from typing import Iterable, Union, Optional, List, Type
+from typing import Iterable, Union, Optional, List, Type, Dict, Any
 from os import PathLike
 
 from deeplabcut.pose_estimation_tensorflow.nnet.processing import Predictor
@@ -27,7 +27,8 @@ Pathy = Union[PathLike, str]
 def analyze_frame_store(config_path: Pathy, frame_stores: Union[Iterable[Pathy], Pathy],
                         predictor: Optional[str] = None, save_as_csv: bool = False,
                         multi_output_format: str = "default", video_folders: Union[None, Pathy, Iterable[Pathy]]=None,
-                        num_outputs: Optional[int] = None, shuffle = 1, trainingsetindex = 0):
+                        num_outputs: Optional[int] = None, shuffle = 1, trainingsetindex = 0,
+                        predictor_settings: Optional[Dict[str, Any]] = None):
     """
     Takes a DeepLabCut Frame Store file (.dlcf) and makes predictions for the stored frames, using whatever predictor
     plugin is selected. This allows for the video to be run through the Deep Neural Network once, and then run through
@@ -52,6 +53,9 @@ def analyze_frame_store(config_path: Pathy, frame_stores: Union[Iterable[Pathy],
                     the network. The default is 1.
     :param trainingsetindex: int, optional. Integer specifying which TrainingsetFraction to use. By default the first
                              (note that TrainingFraction is a list in config.yaml).
+    :param predictor_settings: Optional dictionary of strings to any. This will specify what settings a predictor should use,
+                        completely ignoring any settings specified in the config.yaml. Default value is None, which
+                        tells this method to use the settings specified in the config.yaml.
 
     :return: The labels are stored as MultiIndex Pandas Array, which contains the name of the network, body part name,
             (x, y) label position in pixels, and the likelihood for each frame per body part. These arrays are stored
@@ -93,7 +97,7 @@ def analyze_frame_store(config_path: Pathy, frame_stores: Union[Iterable[Pathy],
 
     for frame_store_path, video_path in zip(frame_stores, video_files):
         _analyze_frame_store(cfg, frame_store_path, video_path, dlc_scorer, dlc_scorer_legacy, predictor_cls,
-                             multi_output_format, num_outputs, train_frac, save_as_csv)
+                             multi_output_format, num_outputs, train_frac, save_as_csv, predictor_settings)
 
     print("Analysis and Predictions are Done! Now your research can truly start!")
     return dlc_scorer
@@ -176,7 +180,8 @@ def _get_pandas_header(body_parts: List[str], num_outputs: int, out_format: str,
 
 def _analyze_frame_store(cfg: dict, frame_store_path: Path, video_name: Optional[str], dlc_scorer: str,
                          dlc_scorer_legacy: str, predictor_cls: Type[Predictor], multi_output_format: str,
-                         num_outputs: int, train_frac: str, save_as_csv: bool) -> str:
+                         num_outputs: int, train_frac: str, save_as_csv: bool,
+                         predictor_settings: Optional[Dict[str, Any]]) -> str:
     # Check if the data was analyzed yet...
     v_name_sanitized = Path(video_name).resolve().stem if(video_name is not None) else "unknownVideo"
     print(v_name_sanitized)
@@ -195,7 +200,7 @@ def _analyze_frame_store(cfg: dict, frame_store_path: Path, video_name: Optional
             num_f, f_h, f_w, f_rate, stride, vid_h, vid_w, off_y, off_x, bp_lst = frame_reader.get_header().to_list()
             pd_index = _get_pandas_header(bp_lst, num_outputs, multi_output_format, dlc_scorer)
 
-            predictor_settings = GetPredictorSettings(cfg, predictor_cls)
+            predictor_settings = GetPredictorSettings(cfg, predictor_cls, predictor_settings)
 
             video_metadata = {
                 "fps": f_rate,

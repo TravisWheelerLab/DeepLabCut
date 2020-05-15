@@ -36,7 +36,8 @@ from skimage.util import img_as_ubyte
 
 def analyze_videos(config, videos, videotype='avi', shuffle=1, trainingsetindex=0, gputouse=None, save_as_csv=False,
                    destfolder=None, cropping=None, batchsize=None, predictor = None, multi_output_format = "default",
-                   get_nframesfrommetadata=True, TFGPUinference=True, dynamic=(False,.5,10), num_outputs = None):
+                   get_nframesfrommetadata=True, TFGPUinference=True, dynamic=(False,.5,10), num_outputs = None,
+                   predictor_settings = None):
     """
     Makes prediction based on a trained network. The index of the trained network is specified by parameters in the
     config file (in particular the variable 'snapshotindex')
@@ -110,6 +111,10 @@ def analyze_videos(config, videos, videotype='avi', shuffle=1, trainingsetindex=
 
     num_outputs: int, default: from config.yaml, or 1 if not set in config.yaml.
         Allows the user to set the number of predictions for bodypart, overriding the option in the config file.
+
+    predictor_settings: Optional dictionary of strings to any. This will specify what settings a predictor should use,
+                        completely ignoring any settings specified in the config.yaml. Default value is None, which
+                        tells this method to use the settings specified in the config.yaml.
 
     Examples
     --------
@@ -278,7 +283,7 @@ def analyze_videos(config, videos, videotype='avi', shuffle=1, trainingsetindex=
         for video in Videos:
             DLCscorer = AnalyzeVideo(video, DLCscorer, DLCscorerlegacy, trainFraction, cfg, dlc_cfg, sess, inputs,
                                      outputs, pdindex, save_as_csv, predictor_cls, multi_output_format, destfolder,
-                                     get_nframesfrommetadata, TFGPUinference, dynamic)
+                                     get_nframesfrommetadata, TFGPUinference, dynamic, predictor_settings)
         os.chdir(str(start_path))
         print("The videos are analyzed. Now your research can truly start! \n You can create labeled videos with 'create_labeled_video'.")
         print("If the tracking is not satisfactory for some videos, consider expanding the training set. You can use the function 'extract_outlier_frames' to extract any outlier frames!")
@@ -410,7 +415,7 @@ def GetPoseAll(cfg, dlc_cfg, sess, inputs, outputs, cap, nframes, batchsize, pre
 
 
 # Utility method used by AnalyzeVideo, gets the settings for the given predictor plugin
-def GetPredictorSettings(cfg, predictor_cls):
+def GetPredictorSettings(cfg, predictor_cls, usr_passed_settings = None):
     """ Get the predictor settings from deeplabcut config and return a dictionary for plugin to use... """
     # Grab setting blueprints for predictor plugins(list of tuples of name, desc, default val)....
     setting_info = predictor_cls.get_settings()
@@ -422,11 +427,18 @@ def GetPredictorSettings(cfg, predictor_cls):
     # Pull out the name and default values into a dictionary...
     setting_info = {name: def_val for (name, desc, def_val) in predictor_cls.get_settings()}
 
-    # If the dlc config contains a category predictors, and predictors contains a category named after the plugin, load
-    # the user cfg for this plugin and merge it with default values
-    if(("predictors" in cfg) and (cfg["predictors"]) and (name in cfg["predictors"])):
+
+    if(usr_passed_settings is None):
+        # If the dlc config contains a category predictors, and predictors contains a category named after the plugin, load
+        # the user cfg for this plugin and merge it with default values
+        if(("predictors" in cfg) and (cfg["predictors"]) and (name in cfg["predictors"])):
+            setting_info.update(
+                {key: cfg["predictors"][name][key] for key in (setting_info.keys() & cfg["predictors"][name].keys())}
+            )
+    else:
+        # If the user directly passed settings to this method, we ignore the config and use these settings.
         setting_info.update(
-            {key: cfg["predictors"][name][key] for key in (setting_info.keys() & cfg["predictors"][name].keys())}
+            {key: usr_passed_settings[key] for key in (setting_info.keys() & usr_passed_settings.keys())}
         )
 
     return setting_info
@@ -630,7 +642,7 @@ def bruteforce_countframes_bydecoding(cap):
 
 def AnalyzeVideo(video, DLCscorer, DLCscorerlegacy, trainFraction, cfg, dlc_cfg, sess, inputs, outputs, pdindex,
                  save_as_csv, predictor, multi_output_format, destfolder, get_nframesfrommetadata, TFGPUinference,
-                 dynamic):
+                 dynamic, predictor_settings):
     ''' Helper function for analyzing a video '''
     # Note: predictor is not a string but rather the selected plugin's class
     print("Starting to analyze % ", video)
@@ -687,7 +699,7 @@ def AnalyzeVideo(video, DLCscorer, DLCscorerlegacy, trainFraction, cfg, dlc_cfg,
                 }
 
                 # Create a predictor plugin instance...
-                predictor_settings = GetPredictorSettings(cfg, predictor)  # Grab the plugin settings for this plugin...
+                predictor_settings = GetPredictorSettings(cfg, predictor, predictor_settings)  # Grab the plugin settings for this plugin...
                 print(f"Plugin {predictor.get_name()} Settings: {predictor_settings}")
                 predictor_inst = predictor(dlc_cfg['all_joints_names'], dlc_cfg["num_outputs"], nframes,
                                            predictor_settings,
