@@ -435,7 +435,7 @@ class DLCFSWriter():
         """
         Write the following frames to the file.
 
-        :param data: A TrackingData object, which contains frame data
+        :param data: A TrackingData object, which contains frame data.
         """
         # Some checks to make sure tracking data parameters match those set in the header:
         self._current_frame += data.get_frame_count()

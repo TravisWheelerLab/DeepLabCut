@@ -29,18 +29,35 @@ def analyze_frame_store(config_path: Pathy, frame_stores: Union[Iterable[Pathy],
                         multi_output_format: str = "default", video_folders: Union[None, Pathy, Iterable[Pathy]]=None,
                         num_outputs: Optional[int] = None, shuffle = 1, trainingsetindex = 0):
     """
-    TODO...
+    Takes a DeepLabCut Frame Store file (.dlcf) and makes predictions for the stored frames, using whatever predictor
+    plugin is selected. This allows for the video to be run through the Deep Neural Network once, and then run through
+    several prediction algorithms as many times as desired, saving time. It also allows for frames to be processed
+    on one computer to be transferred to another computer for post-processing and predictions.
 
-    :param config_path:
-    :param frame_stores:
-    :param predictor:
-    :param save_as_csv:
-    :param multi_output_format:
-    :param video_folders:
-    :param num_outputs:
-    :param shuffle:
-    :param trainingsetindex:
-    :return:
+    :param config_path: The path to the DLC config to use to interpret this data. The .DLCF will inherit the neural
+                        network of this project, allowing for frame labeling using this project.
+    :param frame_stores: The paths to the frame stores (.dlcf files), string or list of strings.
+    :param predictor: A String, the name of the predictor plugin to be used to make predictions.
+    :param save_as_csv: A Boolean, True to save the results to the human readable .csv format, otherwise false.
+    :param multi_output_format: A string. Determines the multi output format used. "default" uses the default format,
+                                while "separate-bodyparts" separates the multi output predictions such that each is its
+                                own body part.
+    :param video_folders: None, a string, or a list of strings, folders to search through to find videos which
+                          correlate to the .dlcf files. If set to None, this method will search for the corresponding
+                          videos in the directory each .dlcf file is contained in.
+    :param num_outputs: int, default: from config.yaml, or 1 if not set in config.yaml.
+                        Allows the user to set the number of predictions for bodypart,
+                        overriding the option in the config file.
+    :param shuffle: int, optional. An integer specifying the shuffle index of the training dataset used for training
+                    the network. The default is 1.
+    :param trainingsetindex: int, optional. Integer specifying which TrainingsetFraction to use. By default the first
+                             (note that TrainingFraction is a list in config.yaml).
+
+    :return: The labels are stored as MultiIndex Pandas Array, which contains the name of the network, body part name,
+            (x, y) label position in pixels, and the likelihood for each frame per body part. These arrays are stored
+            in an efficient Hierarchical Data Format (HDF) in the same directory, where the video is stored. However,
+            if the flag save_as_csv is set to True, the data can also be exported in comma-separated values format
+            (.csv), which in turn can be imported in many programs, such as MATLAB, R, Prism, etc.
     """
     # Grab the name of the current DLC Scorer, hack as DLCs Plot functions require a scorer, which is dumb. If it fails,
     # we just call the model 'Unknown' :). Simply means user won't be able to use create_labeled_video, data is still
