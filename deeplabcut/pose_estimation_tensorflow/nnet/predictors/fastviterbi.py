@@ -403,39 +403,49 @@ class FastViterbi(Predictor):
         self._viterbi_probs[frame][out_bp] = probs * (1 - self.EDGE_PROB)
 
 
-    def _compute_normal_frame(self, out_bp: int, frame: int):
-        """ Computes and inserts a frame that has occurred after the first data-full frame. """
+    def _compute_normal_frame(self, out_bp: int, frame_idx: int, prior_frame_idx: int,
+                              trans_func: Callable[[ndarray, ndarray, ndarray, ndarray], ndarray]):
+        """
+        Computes and inserts a frame that has occurred after the first data-full frame.
+
+        :param out_bp: Body part index to work on, an integer.
+        :param frame_idx: The index of the frame to work on, integer.
+        :param prior_frame_idx: The prior frame index. Considered the prior frame when forward is done.
+        :param trans_func: The functions which computes transfer probabilities between the two frames. It accepts 4
+                           numpy arrays (current x indexes, current y indexes, prior x indexes, prior y indexes) and
+                           expects a 2 dimensional array of (current location) -> (prior location) -> (transition prob)
+        """
         # Get coordinates for all above threshold probabilities in this frame...
-        cy, cx, current_prob, cx_off, cy_off = self._sparse_data[frame][out_bp].unpack()
+        cy, cx, current_prob, cx_off, cy_off = self._sparse_data[frame_idx][out_bp].unpack()
 
         # SPECIAL CASE: NO IN-FRAME VITERBI VALUES THAT MAKE IT ABOVE THRESHOLD...
         if (cy is None):
             # In this special case, we just copy the prior frame data...
-            self._sparse_data[frame][out_bp] = self._sparse_data[frame - 1][out_bp].duplicate()
-            self._viterbi_probs[frame][out_bp] = np.copy(self._viterbi_probs[frame - 1][out_bp])
-            self._edge_vals[frame, out_bp] = self._edge_vals[frame - 1, out_bp]
+            self._sparse_data[frame_idx][out_bp] = self._sparse_data[prior_frame_idx][out_bp].duplicate()
+            self._viterbi_probs[frame_idx][out_bp] = np.copy(self._viterbi_probs[prior_frame_idx][out_bp])
+            self._edge_vals[frame_idx, out_bp] = self._edge_vals[prior_frame_idx, out_bp]
             return
 
         # NORMAL CASE:
 
         # Get data for the prior frame...
-        py, px, pprobs, px_off, py_off = self._sparse_data[frame - 1][out_bp].unpack()
-        prior_vit_probs = self._viterbi_probs[frame - 1][out_bp]
+        py, px, pprobs, px_off, py_off = self._sparse_data[prior_frame_idx][out_bp].unpack()
+        prior_vit_probs = self._viterbi_probs[prior_frame_idx][out_bp]
 
         # Scale current probabilities to include edges...
         current_prob = current_prob * (1 - self.EDGE_PROB)
 
         # Get all of the same data for the edge values...
         edge_x, edge_y = self._edge_coords[:, 0], self._edge_coords[:, 1]
-        prior_edge_probs = self._edge_vals[frame - 1, out_bp, :]
+        prior_edge_probs = self._edge_vals[prior_frame_idx, out_bp, :]
         current_edge_probs = np.array([self._edge_block_value] * (self.BLOCKS_PER_EDGE * 4))
 
         # COMPUTE IN-FRAME VITERBI VALUES:
         # Compute probabilities of transferring from the prior frame to this frame...
         frame_to_frame = (np.expand_dims(current_prob, axis=1) * np.expand_dims(prior_vit_probs, axis=0)
-                          * self._gaussian_values_at(cx, cy, px, py))
+                          * trans_func(cx, cy, px, py))
         # Compute the probabilities of transferring from the prior edge to this frame.
-        edge_to_frame = (np.expand_dims(current_prob, axis=1) * self._gaussian_values_at(cx, cy, edge_x, edge_y)
+        edge_to_frame = (np.expand_dims(current_prob, axis=1) * trans_func(cx, cy, edge_x, edge_y)
                          * np.expand_dims(prior_edge_probs, axis=0))
         # Merge probabilities of going from the edge to the frame or frame to frame, selecting the max of the two for
         # each point in this frame.
@@ -443,11 +453,11 @@ class FastViterbi(Predictor):
 
         # COMPUTE OFF-SCREEN VITERBI VALUES:
         # Compute the probability of transitioning from the prior frame to the current edge.....
-        frame_to_edge = (np.expand_dims(current_edge_probs, axis=1) * self._gaussian_values_at(edge_x, edge_y, px, py)
+        frame_to_edge = (np.expand_dims(current_edge_probs, axis=1) * trans_func(edge_x, edge_y, px, py)
                          * np.expand_dims((prior_vit_probs), axis=0))
         # Compute the probability of transitioning from the prior edge to the current edge...
         edge_to_edge = (np.expand_dims(current_edge_probs, axis=1) * np.expand_dims(prior_edge_probs, axis=0)
-                        * self._gaussian_values_at(edge_x, edge_y, edge_x, edge_y))
+                        * trans_func(edge_x, edge_y, edge_x, edge_y))
         # Merge probabilities to produce final edge transitioning viterbi values...
         edge_vit_vals = np.maximum(np.max(frame_to_edge, axis=1), np.max(edge_to_edge, axis=1))
 
@@ -466,15 +476,15 @@ class FastViterbi(Predictor):
 
         if (sum(post_filter) == 0):
             # In the case where all values are nan or zero, copy the prior frame
-            self._sparse_data[frame][out_bp] = self._sparse_data[frame - 1][out_bp].duplicate()
-            self._viterbi_probs[frame][out_bp] = np.copy(self._viterbi_probs[frame - 1][out_bp])
-            self._edge_vals[frame, out_bp] = self._edge_vals[frame - 1, out_bp]
+            self._sparse_data[frame_idx][out_bp] = self._sparse_data[prior_frame_idx][out_bp].duplicate()
+            self._viterbi_probs[frame_idx][out_bp] = np.copy(self._viterbi_probs[prior_frame_idx][out_bp])
+            self._edge_vals[frame_idx, out_bp] = self._edge_vals[prior_frame_idx, out_bp]
             return
 
 
         # SAVE NEW VITERBI FRAMES:
-        self._edge_vals[frame, out_bp] = edge_vit_vals
-        self._viterbi_probs[frame][out_bp] = viterbi_vals
+        self._edge_vals[frame_idx, out_bp] = edge_vit_vals
+        self._viterbi_probs[frame_idx][out_bp] = viterbi_vals
 
 
     def _forward_step(self, frame_count: int):
@@ -493,7 +503,8 @@ class FastViterbi(Predictor):
                     self._compute_init_frame(out_bp, self._current_frame)
                 # Otherwise we can do full viterbi on this frame...
                 else:
-                    self._compute_normal_frame(out_bp, self._current_frame)
+                    self._compute_normal_frame(out_bp, self._current_frame, self._current_frame - 1,
+                                               self._gaussian_values_at)
 
             # Increment frame counter
             self._current_frame += 1
@@ -721,12 +732,12 @@ class FastViterbi(Predictor):
              "Quartic")
         ]
 
-    @staticmethod
-    def get_name() -> str:
+    @classmethod
+    def get_name(cls) -> str:
         return "fast_viterbi"
 
-    @staticmethod
-    def get_description() -> str:
+    @classmethod
+    def get_description(cls) -> str:
         return ("A predictor that applies the Viterbi algorithm to frames in order to predict poses. "
                 "The algorithm is frame-aware, unlike the default algorithm used by DeepLabCut, but "
                 "is also more memory intensive and computationally expensive. This specific implementation "
