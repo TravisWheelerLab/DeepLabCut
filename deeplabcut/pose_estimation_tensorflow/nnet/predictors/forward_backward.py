@@ -1,5 +1,5 @@
 # For types in methods
-from typing import Union, List, Tuple, Any, Dict, Callable, Optional
+from typing import Union, List, Tuple, Any, Dict, Callable, Optional, Sequence
 from numpy import ndarray
 import tqdm
 
@@ -14,6 +14,7 @@ from collections import deque
 
 # TODO: Add more test methods, disable numpy warnings....
 # TODO: Add Concept of being "In the Ground..."
+# TODO: Forward Pass, Backward Pass, Multiply the two to produce postieror probs.
 # Represents an valid numpy indexing type.
 Indexer = Union[slice, int, List[int], Tuple[int], None]
 
@@ -157,19 +158,19 @@ class SparseTrackingData:
         return new_sparse_data
 
 
-class FastViterbi(Predictor):
+class ForwardBackward(Predictor):
     """
-    A predictor that applies the Viterbi algorithm to frames in order to predict poses.
+    A predictor that applies the Forward Backward algorithm to frames in order to predict poses.
     The algorithm is frame-aware, unlike the default algorithm used by DeepLabCut, but
     is also more memory intensive and computationally expensive. This specific implementation
-    uses sparse matrix multiplication for massive speedup over the normal
-    viterbi implementation...)
+    uses sparse matrix multiplication for massive speedup over a normal
+    Forward Backward implementation...)
     """
     # The amount of side block increase for the normal distribution to increase by 1...
     ND_UNIT_PER_SIDE_COUNT = 10
 
     def __init__(self, bodyparts: Union[List[str]], num_outputs: int, num_frames: int, settings: Union[Dict[str, Any], None], video_metadata: Dict[str, Any]):
-        """ Initialized a fastviterbi plugin for analyzing a video """
+        """ Initialized a ForwardBackward plugin for analyzing a video """
         super().__init__(bodyparts, num_outputs, num_frames, settings, video_metadata)
 
         # Store bodyparts and num_frames for later use, they become useful
@@ -181,8 +182,8 @@ class FastViterbi(Predictor):
         # Holds the original TrackingData in a sparse format using the SparseTrackingData specified above.
         self._sparse_data: List[List[Optional[SparseTrackingData]]] = [None] * num_frames
         # Will hold the viterbi frames on the forward compute...
-        # Dimension are: Frame -> Bodypart -> (Viterbi probability).
-        self._viterbi_probs: List[List[Optional[ndarray]]] = [None] * num_frames
+        # Dimension are: Frame -> Bodypart -> (Forward/Backward probability).
+        self._frame_probs: List[List[Optional[ndarray]]] = [None] * num_frames
 
         # Stashes edge to edge probabilities, in the form delta-edge-index -> gaussian...
         self._edge_edge_table: ndarray = None
@@ -396,15 +397,16 @@ class FastViterbi(Predictor):
 
         # If no points are found above the threshold, frame for this bodypart is a dud, set it to none...
         if (y is None):
-            self._viterbi_probs[frame][out_bp] = None
+            self._frame_probs[frame][out_bp] = None
             return
 
         # Set first attribute for this bodypart to the y, x coordinates element wise.
-        self._viterbi_probs[frame][out_bp] = probs * (1 - self.EDGE_PROB)
+        self._frame_probs[frame][out_bp] = probs * (1 - self.EDGE_PROB)
 
 
     def _compute_normal_frame(self, out_bp: int, frame_idx: int, prior_frame_idx: int,
-                              trans_func: Callable[[ndarray, ndarray, ndarray, ndarray], ndarray]):
+                              trans_func: Callable[[ndarray, ndarray, ndarray, ndarray], ndarray],
+                              is_secondary_pass: bool = False, use_sum: bool = True):
         """
         Computes and inserts a frame that has occurred after the first data-full frame.
 
@@ -414,15 +416,20 @@ class FastViterbi(Predictor):
         :param trans_func: The functions which computes transfer probabilities between the two frames. It accepts 4
                            numpy arrays (current x indexes, current y indexes, prior x indexes, prior y indexes) and
                            expects a 2 dimensional array of (current location) -> (prior location) -> (transition prob)
+        :param is_secondary_pass: If set to True, don't use original data for current probabilities, but rather use
+                                  data already stored in _frame_probs and _edge_vals for this current frame, which is
+                                  empty on the first pass. Defaults to False.
+        :param use_sum: Boolean, set to true to use sum while merging (Forward/Backward), set to false to use max while
+                        merging probabilities (Viterbi).
         """
         # Get coordinates for all above threshold probabilities in this frame...
         cy, cx, current_prob, cx_off, cy_off = self._sparse_data[frame_idx][out_bp].unpack()
 
-        # SPECIAL CASE: NO IN-FRAME VITERBI VALUES THAT MAKE IT ABOVE THRESHOLD...
+        # SPECIAL CASE: NO IN-FRAME FORWARD/BACKWARD/VITERBI VALUES THAT MAKE IT ABOVE THRESHOLD...
         if (cy is None):
             # In this special case, we just copy the prior frame data...
             self._sparse_data[frame_idx][out_bp] = self._sparse_data[prior_frame_idx][out_bp].duplicate()
-            self._viterbi_probs[frame_idx][out_bp] = np.copy(self._viterbi_probs[prior_frame_idx][out_bp])
+            self._frame_probs[frame_idx][out_bp] = np.copy(self._frame_probs[prior_frame_idx][out_bp])
             self._edge_vals[frame_idx, out_bp] = self._edge_vals[prior_frame_idx, out_bp]
             return
 
@@ -430,36 +437,51 @@ class FastViterbi(Predictor):
 
         # Get data for the prior frame...
         py, px, pprobs, px_off, py_off = self._sparse_data[prior_frame_idx][out_bp].unpack()
-        prior_vit_probs = self._viterbi_probs[prior_frame_idx][out_bp]
+        prior_vit_probs = self._frame_probs[prior_frame_idx][out_bp]
 
-        # Scale current probabilities to include edges...
-        current_prob = current_prob * (1 - self.EDGE_PROB)
+        # Scale current probabilities to include edges... (If this is not a secondary pass)
+        if(is_secondary_pass):
+            current_prob = self._frame_probs[frame_idx][out_bp]
+        else:
+            current_prob = current_prob * (1 - self.EDGE_PROB)
 
         # Get all of the same data for the edge values...
         edge_x, edge_y = self._edge_coords[:, 0], self._edge_coords[:, 1]
         prior_edge_probs = self._edge_vals[prior_frame_idx, out_bp, :]
-        current_edge_probs = np.array([self._edge_block_value] * (self.BLOCKS_PER_EDGE * 4))
+        if(is_secondary_pass):
+            current_edge_probs = self._edge_vals[frame_idx, out_bp, :]
+        else:
+            current_edge_probs = np.array([self._edge_block_value] * (self.BLOCKS_PER_EDGE * 4))
 
-        # COMPUTE IN-FRAME VITERBI VALUES:
+        # COMPUTE IN-FRAME FORWARD/BACKWARD/VITERBI VALUES:
         # Compute probabilities of transferring from the prior frame to this frame...
         frame_to_frame = (np.expand_dims(current_prob, axis=1) * np.expand_dims(prior_vit_probs, axis=0)
                           * trans_func(cx, cy, px, py))
         # Compute the probabilities of transferring from the prior edge to this frame.
         edge_to_frame = (np.expand_dims(current_prob, axis=1) * trans_func(cx, cy, edge_x, edge_y)
                          * np.expand_dims(prior_edge_probs, axis=0))
-        # Merge probabilities of going from the edge to the frame or frame to frame, selecting the max of the two for
-        # each point in this frame.
-        viterbi_vals = np.maximum(np.max(frame_to_frame, axis=1), np.max(edge_to_frame, axis=1))
 
-        # COMPUTE OFF-SCREEN VITERBI VALUES:
+        # Merge probabilities of going from the edge to the frame or frame to frame, using different operation depending
+        # on the algorithm selected...
+        if(use_sum):
+            # Forward/Backward: We sum the probabilities for every path to each current location.
+            viterbi_vals = np.add(np.sum(frame_to_frame, axis=1), np.sum(edge_to_frame, axis=1))
+        else:
+            # Viterbi: We only keep the max path for every path to each current location.
+            viterbi_vals = np.maximum(np.max(frame_to_frame, axis=1), np.max(edge_to_frame, axis=1))
+
+        # COMPUTE OFF-SCREEN FORWARD/BACKWARD/VITERBI VALUES:
         # Compute the probability of transitioning from the prior frame to the current edge.....
         frame_to_edge = (np.expand_dims(current_edge_probs, axis=1) * trans_func(edge_x, edge_y, px, py)
                          * np.expand_dims((prior_vit_probs), axis=0))
         # Compute the probability of transitioning from the prior edge to the current edge...
         edge_to_edge = (np.expand_dims(current_edge_probs, axis=1) * np.expand_dims(prior_edge_probs, axis=0)
                         * trans_func(edge_x, edge_y, edge_x, edge_y))
-        # Merge probabilities to produce final edge transitioning viterbi values...
-        edge_vit_vals = np.maximum(np.max(frame_to_edge, axis=1), np.max(edge_to_edge, axis=1))
+        # Merge probabilities to produce final edge transitioning forward/backward/viterbi values...
+        if(use_sum):
+            edge_vit_vals = np.add(np.sum(frame_to_edge, axis=1), np.sum(edge_to_edge, axis=1))
+        else:
+            edge_vit_vals = np.maximum(np.max(frame_to_edge, axis=1), np.max(edge_to_edge, axis=1))
 
         # NORMALIZE PROBABILITIES:
         # If we were to leave the probabilities as-is then we would experience floating point underflow after enough
@@ -477,29 +499,29 @@ class FastViterbi(Predictor):
         if (sum(post_filter) == 0):
             # In the case where all values are nan or zero, copy the prior frame
             self._sparse_data[frame_idx][out_bp] = self._sparse_data[prior_frame_idx][out_bp].duplicate()
-            self._viterbi_probs[frame_idx][out_bp] = np.copy(self._viterbi_probs[prior_frame_idx][out_bp])
+            self._frame_probs[frame_idx][out_bp] = np.copy(self._frame_probs[prior_frame_idx][out_bp])
             self._edge_vals[frame_idx, out_bp] = self._edge_vals[prior_frame_idx, out_bp]
             return
 
 
         # SAVE NEW VITERBI FRAMES:
         self._edge_vals[frame_idx, out_bp] = edge_vit_vals
-        self._viterbi_probs[frame_idx][out_bp] = viterbi_vals
+        self._frame_probs[frame_idx][out_bp] = viterbi_vals
 
 
     def _forward_step(self, frame_count: int):
-        """ Performs a single phase of forward. It assumes the frame has already been sparsified and stored in
+        """ Performs a single phase of Forward. It assumes the frame has already been sparsified and stored in
             self._sparse_data. """
         # Continue on to main loop...
         for __ in range(frame_count):
 
             # Create a frame...
-            self._viterbi_probs[self._current_frame] = [None] * (self._total_bp_count)
+            self._frame_probs[self._current_frame] = [None] * (self._total_bp_count)
 
             for out_bp in range(self._total_bp_count):
                 # If the prior frame was a dud frame and all frames before it where dud frames, try initializing
                 # on this frame... Note in a dud frame all points are below threshold...(Also init on first frame)
-                if((self._current_frame == 0) or (self._viterbi_probs[self._current_frame - 1][out_bp] is None)):
+                if((self._current_frame == 0) or (self._frame_probs[self._current_frame - 1][out_bp] is None)):
                     self._compute_init_frame(out_bp, self._current_frame)
                 # Otherwise we can do full viterbi on this frame...
                 else:
@@ -510,8 +532,27 @@ class FastViterbi(Predictor):
             self._current_frame += 1
 
 
+    def _backward_step(self, frame_count: int):
+        """ Performs a single phase of Backward. Makes the same assumptions as _forward_step """
+        # No point in commenting, identical to _forward_step, but incrementing is backwards and we start at the end.
+        for __ in range(frame_count):
+
+            self._frame_probs[self._current_frame] = [None] * (self._total_bp_count)
+
+            for out_bp in range(self._total_bp_count):
+                if(((self._current_frame + 1) == self._num_frames) or
+                    (self._frame_probs[self._current_frame + 1][out_bp] is None)):
+                    self._compute_init_frame(out_bp, self._current_frame)
+                else:
+                    self._compute_normal_frame(out_bp, self._current_frame, self._current_frame + 1,
+                                               self._gaussian_values_at)
+
+            self._current_frame -= 1
+
+
+
     def on_frames(self, scmap: TrackingData) -> None:
-        """ Handles Forward part of the viterbi algorithm, allowing for faster post processing. """
+        """ Handles Forward part of the Forward/Backward algorithm, allowing for faster post processing. """
         # Perform a step of forward, and return None to indicate we need to post process frames...
         # If gaussian table has not been computed, initialize all data structures.
         if(self._gaussian_table is None):
@@ -523,193 +564,89 @@ class FastViterbi(Predictor):
         return None
 
 
-    def _get_prior_location(self, prior_frame: Tuple[SparseTrackingData, ndarray], prior_edge_probs: ndarray,
-                            current_point: Tuple[int, int, float]) -> Union[Tuple[bool, int, Tuple[int, int, float]], Tuple[None, None, None]]:
-        """
-        Performs the viterbi back computation, given prior frame and current predicted point,
-        returns the predicted point for this frame... (for single bodypart...)
-        """
-        # If the point data is none, return None
-        if((prior_frame[1] is None) or (current_point[0] is None)):
-            return None, None, None
-
-        # Unpack the point
-        cx, cy, cprob = current_point
-        # Get prior frame points/probabilities....
-        (py, px, __, __, __), pprob = prior_frame[0].unpack(), prior_frame[1]
-        # Get prior edge points/probabilities....
-        edge_x, edge_y = self._edge_coords[:, 0], self._edge_coords[:, 1]
-
-        # Compute probability of going from current point to some where in the prior frame...
-        prior_frame_viterbi = (cprob * self._gaussian_values_at(np.array([cx]), np.array([cy]), px, py).flatten() * pprob)
-
-        # Compute the probability of going from the current point to somewhere outside of the prior frame...
-        prior_edge_viterbi = (cprob * self._gaussian_values_at(np.array([cx]), np.array([cy]), edge_x, edge_y).flatten()
-                              * prior_edge_probs)
-
-        # Get max probability in list of possible transitions, for the frame and edge... Also normalize them...
-        # noinspection PyTypeChecker
-        max_frame_i: int = np.argmax(prior_frame_viterbi)
-        # noinspection PyTypeChecker
-        max_edge_i: int = np.argmax(prior_edge_viterbi)
-
-        # Compute total sum of probabilities so we can normalize when returning values...
-        total_sum = np.sum(prior_frame_viterbi) + np.sum(prior_edge_viterbi)
-
-        # If the in frame selection is greater, return it, otherwise return edge prediction
-        if(prior_frame_viterbi[max_frame_i] > prior_edge_viterbi[max_edge_i]):
-            return (True, max_frame_i, (px[max_frame_i], py[max_frame_i], prior_frame_viterbi[max_frame_i] / total_sum))
-        else:
-            return (False, max_edge_i, (edge_x[max_edge_i], edge_y[max_edge_i],
-                    prior_edge_viterbi[max_edge_i] / total_sum))
-
-
     def on_end(self, progress_bar: tqdm.tqdm) -> Union[None, Pose]:
         """ Handles backward part of viterbi, and then returns the poses """
-        return self._backward(progress_bar)
+        progress_bar.reset(total=self._num_frames * 4)
+        self._complete_posterior_probs(progress_bar)
+        return self._viterbi_final_pass(progress_bar)
 
+    def _viterbi_final_pass(self, progress_bar: Optional[tqdm.tqdm]) -> Pose:
+        fb_frames = self._frame_probs
+        fb_edges = np.copy(self._edge_vals)
 
-    def _backward(self, progress_bar: tqdm.tqdm) -> Pose:
-        """
-        Performs backward on the entire set of viterbi frames, posting it's progress to the provided progress bar.
-        """
-        # Counter to keep track of current frame...
-        r_counter = self._num_frames - 1
-        # To eventually store all poses
-        all_poses = Pose.empty_pose(self._num_frames, self._total_bp_count)
-        # Points of the 'prior' frame (really the current frame)
-        prior_points: List[Tuple[int, int, float]] = []
-        # Keeps track last body part count - 1 body parts...
-        bp_queue = deque(maxlen=(self._total_bp_count - 1))
+        def no_transition(cx, cy, px, py):
+            return np.ones((cy.shape[0], py.shape[0]), np.float32)
 
-        # Initial frame...
-        for bp in range(self._total_bp_count):
-            # If point data is None, throw error because entire video has no plotting data then...
-            # This should never happen....
-            if(self._viterbi_probs[r_counter][bp] is None):
-                raise ValueError("All frames contain zero points!!! No actual tracking data!!!")
+        # Forward viterbi pass, we can use compute normal frame with a transform of all ones (does nothing)
+        for f_idx in range(1, self._num_frames):
+            for bp_idx in range(self._total_bp_count):
+                if(self._frame_probs[f_idx - 1][bp_idx] is not None):
+                    self._compute_normal_frame(bp_idx, f_idx, f_idx - 1, no_transition, True, False)
+            if(progress_bar is not None):
+                progress_bar.update(1)
 
-            viterbi_data = self._viterbi_probs[r_counter][bp]
-            coord_y, coord_x, __, x_off, y_off = self._sparse_data[r_counter][bp].unpack()
+        print(np.allclose(fb_frames, self._frame_probs))
+        print(np.allclose(fb_edges, self._edge_vals))
 
-            # Perform negation of prior body parts if enabled
-            if(self.NEGATE_ON):
-                for bpx, bpy, __ in bp_queue:
-                    if (bpx is None):
-                        continue
-                    viterbi_data = viterbi_data * self._neg_gaussian_table[np.abs(coord_y - bpy), np.abs(coord_x - bpx)]
-                    viterbi_data = viterbi_data / np.sum(viterbi_data)
+        # Our final pose object:
+        poses = Pose.empty_pose(self._num_frames, self._total_bp_count)
 
-            # Get the max location index
-            max_frame_loc = np.argmax(viterbi_data)
-            max_edge_loc = np.argmax(self._edge_vals[r_counter, bp])
-
-            # Gather all required fields...
-            x, y = coord_x[max_frame_loc], coord_y[max_frame_loc]
-            off_x, off_y = x_off[max_frame_loc], y_off[max_frame_loc]
-            prob = viterbi_data[max_frame_loc]
-            edge_x, edge_y = self._edge_coords[max_edge_loc]
-            edge_prob = self._edge_vals[r_counter, bp, max_edge_loc]
-
-            # If the edge is greater then the max point in frame, set prior point to (-1, -1) and pose output
-            # probability to 0.
-            if(prob < edge_prob):
-                normalized_prob = edge_prob / (np.sum(self._edge_vals[r_counter, bp]) + np.sum(viterbi_data))
-
-                prior_points.append((edge_x, edge_y, normalized_prob))
-                all_poses.set_at(r_counter, bp, (-1, -1), (0, 0), 0, 1)
-
-                if(self.NEGATE_ON):
-                    bp_queue.append((None, None, None))
-            else:
-                # Normalize the viterbi probability...
-                normalized_prob = prob / (np.sum(self._edge_vals[r_counter, bp]) + np.sum(viterbi_data))
-
-                # Append point to prior points and also add it the the poses object...
-                prior_points.append((x, y, normalized_prob))
-                all_poses.set_at(r_counter, bp, (x, y), (off_x, off_y), normalized_prob, self._down_scaling)
-
-                if(self.NEGATE_ON):
-                    bp_queue.append((x, y, normalized_prob))
-
-            self._viterbi_probs[r_counter][bp] = normalized_prob
-
-        # Drop the counter by 1
-        r_counter -= 1
-        progress_bar.update()
-
-        # Entering main loop...
-        while(r_counter >= 0):
-            # Create a variable to store current points, which will eventually become the prior points...
-            current_points: List[Tuple[Union[None, int], Union[None, int], Union[None, float]]] = []
-
-            for bp in range(self._total_bp_count):
-                # If this point is None, we add a dud prediction, and continue, as all the rest will be None
-                if(self._viterbi_probs[r_counter][bp] is None):
-                    all_poses.set_at(r_counter, bp, (-1, -1), (0, 0), 0, 1)
-                    current_points.append((None, None, None))
-                    if(self.NEGATE_ON):
-                        bp_queue.append((None, None, None))
-                    continue
-
-                # Run single step of backtrack....
-                viterbi_data = self._viterbi_probs[r_counter][bp]
-                coord_y, coord_x, __, x_off, y_off = self._sparse_data[r_counter][bp].unpack()
-
-                # If negate switch is on, perform negation of all prior bodyparts from this one...
-                if(self.NEGATE_ON):
-                    for bpx, bpy, bpprob in bp_queue:
-                        if(bpx is None):
-                            continue
-                        viterbi_data = viterbi_data * self._neg_gaussian_table[np.abs(coord_y - bpy),
-                                                                               np.abs(coord_x - bpx)]
-                        viterbi_data = viterbi_data / np.sum(viterbi_data)
-
-
-                is_in_frame, max_loc, max_point = self._get_prior_location(
-                    (self._sparse_data[r_counter][bp], viterbi_data),
-                    self._edge_vals[r_counter, bp],
-                    prior_points[bp]
-                )
-                # If point is None, plot an unplotable, copy prior point, continue
-                if(is_in_frame is None):
-                    all_poses.set_at(r_counter, bp, (-1, -1), (0, 0), 0, 1)
-                    current_points.append((None, None, None))
-                    if(self.NEGATE_ON):
-                        bp_queue.append((None, None, None))
-                    continue
-
-
-                # Based on if the point is in frame or not, decide how to plot it.
-                if(is_in_frame):
-                    max_x, max_y, max_normalized_prob = max_point
-
-                    all_poses.set_at(r_counter, bp, (max_x, max_y), (x_off[max_loc], y_off[max_loc]),
-                                     max_normalized_prob, self._down_scaling)
-
-                    if (self.NEGATE_ON):
-                        bp_queue.append(max_point)
+        # We now do maximum selection, same as doing back tracing without transitions.
+        for f_idx in range(self._num_frames):
+            for bp_idx in range(self._total_bp_count):
+                if(self._frame_probs[f_idx][bp_idx] is None):
+                    poses.set_at(f_idx, bp_idx, (0, 0), (-4, -4), 0, 8)
                 else:
-                    all_poses.set_at(r_counter, bp, (-1, -1), (0, 0), 0, 1)
+                    # Get the max location in the frame....
+                    y_coords, x_coords, __, x_offsets, y_offsets = self._sparse_data[f_idx][bp_idx].unpack()
+                    max_loc = np.argmax(self._frame_probs[f_idx][bp_idx])
+                    m_y, m_x, m_p = y_coords[max_loc], x_coords[max_loc], self._frame_probs[f_idx][bp_idx][max_loc]
+                    m_offx, m_offy = x_offsets[max_loc], y_offsets[max_loc]
+                    # Get the max location on the edges....
+                    edge_x, edge_y = self._edge_coords[:, 0], self._edge_coords[:, 1]
+                    max_edge_loc = np.argmax(self._edge_vals[f_idx, bp_idx])
+                    m_edge_prob = self._edge_vals[f_idx, bp_idx, max_edge_loc]
 
-                    if (self.NEGATE_ON):
-                        bp_queue.append((None, None, None))
+                    if(m_edge_prob > m_p):
+                        poses.set_at(f_idx, bp_idx, (0, 0), (-4, -4), 0, 8)
+                    else:
+                        poses.set_at(f_idx, bp_idx, (m_x, m_y), (m_offx, m_offy), m_p, self._down_scaling)
 
-                # Append point to current points....
-                current_points.append(max_point)
-                self._viterbi_probs[r_counter][bp] = max_point[2]
+            if(progress_bar is not None):
+                progress_bar.update(1)
 
-            # Set prior_points to current_points...
-            prior_points = current_points
-            # Decrement the counter
-            r_counter -= 1
-            progress_bar.update()
+        self._frame_probs = fb_frames
+        self._edge_vals = fb_edges
 
-        # Return the poses...
-        return all_poses
+        return poses
 
-    @staticmethod
-    def get_settings() -> Union[List[Tuple[str, str, Any]], None]:
+    def _complete_posterior_probs(self, progress_bar: Optional[tqdm.tqdm]):
+        # Make variable pointing to Forward results so we don't lose them.
+        forward_frames = self._frame_probs
+        forward_edges = np.copy(self._edge_vals)
+
+        # Run Backward
+        for i in range(self._num_frames):
+            self._backward_step(1)
+            if(progress_bar is not None):
+                progress_bar.update(1)
+
+        # Take both Forward and Backward results and merge them via multiplication, then normalize the probabilities.
+        # If one of the two produces a None frame, we skip these frames.
+        for f_idx in range(self._num_frames):
+            for bp_idx in range(self._total_bp_count):
+                if((self._frame_probs[f_idx][bp_idx] is not None) and (forward_frames[f_idx][bp_idx] is not None)):
+                    frame_result = self._frame_probs[f_idx][bp_idx] * forward_frames[f_idx][bp_idx]
+                    edge_result = self._edge_vals[f_idx, bp_idx] * forward_edges[f_idx, bp_idx]
+                    self._frame_probs[f_idx][bp_idx] = frame_result / np.sum(frame_result)
+                    self._edge_vals[f_idx, bp_idx] = edge_result / np.sum(edge_result)
+                else:
+                    self._frame_probs[f_idx][bp_idx] = None
+            progress_bar.update(1)
+
+
+    @classmethod
+    def get_settings(cls) -> Union[List[Tuple[str, str, Any]], None]:
         return [
             ("norm_dist", "The normal distribution of the 2D gaussian curve used"
                           "for transition probabilities by the viterbi algorithm.", 1),
@@ -734,15 +671,7 @@ class FastViterbi(Predictor):
 
     @classmethod
     def get_name(cls) -> str:
-        return "fast_viterbi"
-
-    @classmethod
-    def get_description(cls) -> str:
-        return ("A predictor that applies the Viterbi algorithm to frames in order to predict poses. "
-                "The algorithm is frame-aware, unlike the default algorithm used by DeepLabCut, but "
-                "is also more memory intensive and computationally expensive. This specific implementation "
-                "uses sparse matrix multiplication for massive speedup over the normal "
-                "viterbi implementation...")
+        return "forward_backward"
 
     @classmethod
     def get_tests(cls) -> Union[List[Callable[[], Tuple[bool, str, str]]], None]:
@@ -814,11 +743,11 @@ class FastViterbi(Predictor):
         # Check output
         predictor.on_end(tqdm.tqdm(total=4))
 
-        if(any([(data[0] is None) for data in predictor._viterbi_probs]) or
+        if(any([(data[0] is None) for data in predictor._frame_probs]) or
            any([(data[0] is None) for data in predictor._sparse_data])):
-            return (False, str((predictor._viterbi_probs, predictor._sparse_data)), "No None Entries...")
+            return (False, str((predictor._frame_probs, predictor._sparse_data)), "No None Entries...")
         else:
-            return (True, str((predictor._viterbi_probs, predictor._sparse_data)), "No None Entries...")
+            return (True, str((predictor._frame_probs, predictor._sparse_data)), "No None Entries...")
 
 
     @classmethod

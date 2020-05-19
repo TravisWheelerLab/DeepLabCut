@@ -10,7 +10,7 @@ from matplotlib.patches import Circle
 from tqdm import tqdm
 
 # Plugin base class
-from deeplabcut.pose_estimation_tensorflow.nnet.predictors.fastviterbi import FastViterbi, SparseTrackingData
+from deeplabcut.pose_estimation_tensorflow.nnet.predictors.forward_backward import FastViterbi, SparseTrackingData
 from deeplabcut.pose_estimation_tensorflow.nnet.processing import Pose
 
 # For computations
@@ -198,7 +198,7 @@ class SupervisedViterbi(FastViterbi):
         Returns the frames and
         """
         drop_value = float(args[0]) if(len(args) > 0 and (0 < float(args[0]) < 1)) else 0.5
-        probs = np.array(self._viterbi_probs)
+        probs = np.array(self._frame_probs)
 
         diff_forward = np.concatenate(np.zeros((1, probs.shape[1])), probs[1:] - probs[:-1], axis=1)
         diff_forward = np.nonzero(diff_forward >= drop_value)
@@ -208,7 +208,7 @@ class SupervisedViterbi(FastViterbi):
 
     def _on_low_prob(self, args: List[str], poses: Pose) -> Tuple[np.ndarray, np.ndarray]:
         threshold = float(args[0]) if(len(args) > 0 and (0 < float(args[0]) < 1)) else 0.1
-        probs = np.array(self._viterbi_probs)
+        probs = np.array(self._frame_probs)
 
         return np.nonzero(probs < threshold)
 
@@ -234,7 +234,7 @@ class SupervisedViterbi(FastViterbi):
 
 
     def on_end(self, progress_bar: tqdm) -> Optional[Pose]:
-        poses = super()._backward(progress_bar)
+        poses = super()._backtracing(progress_bar)
         # Reset the current frame....
         self._current_frame = 0
 
@@ -305,12 +305,12 @@ class SupervisedViterbi(FastViterbi):
              ["threshold", 0.1])
         ]
 
-    @staticmethod
-    def get_name() -> str:
+    @classmethod
+    def get_name(cls) -> str:
         return "supervised_viterbi"
 
-    @staticmethod
-    def get_description() -> str:
+    @classmethod
+    def get_description(cls) -> str:
         return ("A predictor that applies the viterbi algorithm to frames in order to predict poses. "
                 "The algorithm is frame-aware, unlike the default algorithm used by DeepLabCut, but "
                 "is also more memory intensive and computationally expensive. This specific implementation "
