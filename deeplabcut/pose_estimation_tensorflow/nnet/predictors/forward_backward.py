@@ -387,6 +387,29 @@ class ForwardBackward(Predictor):
             out_frame += 1
 
 
+    def _compute_bp_neg_frame(self, out_bp: int, frame: int, bp_queue: deque):
+        """
+        Runs body part negation on a frame.
+        """
+        y, x, __, __, __ = self._sparse_data[frame][out_bp].unpack()
+        probs = self._frame_probs[frame][out_bp]
+
+        if(y is None):
+            self._frame_probs[frame][out_bp] = None
+            bp_queue.append((None, None, None))
+
+        for px, py, pprob in bp_queue:
+            if(px is None):
+                continue
+            probs = probs * self._neg_gaussian_table[np.abs(y - py), np.abs(x - px)]
+            probs = probs / np.sum(probs)
+
+        max_loc = np.argmax(probs)
+        bp_queue.append((x[max_loc], y[max_loc], probs[max_loc]))
+
+        self._frame_probs[frame][out_bp] = probs
+
+
     def _compute_init_frame(self, out_bp: int, frame: int):
         """ Inserts the initial frame, or first frame to have actual points that are above the threshold. """
         # Get coordinates for all above threshold probabilities in this frame...
@@ -566,28 +589,12 @@ class ForwardBackward(Predictor):
 
     def on_end(self, progress_bar: tqdm.tqdm) -> Union[None, Pose]:
         """ Handles backward part of viterbi, and then returns the poses """
-        progress_bar.reset(total=self._num_frames * 4)
+        progress_bar.reset(total=self._num_frames * 3)
         self._complete_posterior_probs(progress_bar)
-        return self._viterbi_final_pass(progress_bar)
+        return self._final_pass(progress_bar)
 
-    def _viterbi_final_pass(self, progress_bar: Optional[tqdm.tqdm]) -> Pose:
-        fb_frames = self._frame_probs
-        fb_edges = np.copy(self._edge_vals)
 
-        def no_transition(cx, cy, px, py):
-            return np.ones((cy.shape[0], py.shape[0]), np.float32)
-
-        # Forward viterbi pass, we can use compute normal frame with a transform of all ones (does nothing)
-        for f_idx in range(1, self._num_frames):
-            for bp_idx in range(self._total_bp_count):
-                if(self._frame_probs[f_idx - 1][bp_idx] is not None):
-                    self._compute_normal_frame(bp_idx, f_idx, f_idx - 1, no_transition, True, False)
-            if(progress_bar is not None):
-                progress_bar.update(1)
-
-        print(np.allclose(fb_frames, self._frame_probs))
-        print(np.allclose(fb_edges, self._edge_vals))
-
+    def _final_pass(self, progress_bar: Optional[tqdm.tqdm]) -> Pose:
         # Our final pose object:
         poses = Pose.empty_pose(self._num_frames, self._total_bp_count)
 
@@ -603,7 +610,6 @@ class ForwardBackward(Predictor):
                     m_y, m_x, m_p = y_coords[max_loc], x_coords[max_loc], self._frame_probs[f_idx][bp_idx][max_loc]
                     m_offx, m_offy = x_offsets[max_loc], y_offsets[max_loc]
                     # Get the max location on the edges....
-                    edge_x, edge_y = self._edge_coords[:, 0], self._edge_coords[:, 1]
                     max_edge_loc = np.argmax(self._edge_vals[f_idx, bp_idx])
                     m_edge_prob = self._edge_vals[f_idx, bp_idx, max_edge_loc]
 
@@ -615,15 +621,14 @@ class ForwardBackward(Predictor):
             if(progress_bar is not None):
                 progress_bar.update(1)
 
-        self._frame_probs = fb_frames
-        self._edge_vals = fb_edges
-
         return poses
 
     def _complete_posterior_probs(self, progress_bar: Optional[tqdm.tqdm]):
         # Make variable pointing to Forward results so we don't lose them.
         forward_frames = self._frame_probs
         forward_edges = np.copy(self._edge_vals)
+        # Currently equals num_frames, need to move it down one before we enter the loop below which does array access.
+        self._current_frame -= 1
 
         # Run Backward
         for i in range(self._num_frames):
@@ -638,8 +643,9 @@ class ForwardBackward(Predictor):
                 if((self._frame_probs[f_idx][bp_idx] is not None) and (forward_frames[f_idx][bp_idx] is not None)):
                     frame_result = self._frame_probs[f_idx][bp_idx] * forward_frames[f_idx][bp_idx]
                     edge_result = self._edge_vals[f_idx, bp_idx] * forward_edges[f_idx, bp_idx]
-                    self._frame_probs[f_idx][bp_idx] = frame_result / np.sum(frame_result)
-                    self._edge_vals[f_idx, bp_idx] = edge_result / np.sum(edge_result)
+                    total_sum = np.sum(frame_result) + np.sum(edge_result)
+                    self._frame_probs[f_idx][bp_idx] = frame_result / total_sum
+                    self._edge_vals[f_idx, bp_idx] = edge_result / total_sum
                 else:
                     self._frame_probs[f_idx][bp_idx] = None
             progress_bar.update(1)
