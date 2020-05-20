@@ -402,10 +402,15 @@ class ForwardBackward(Predictor):
             if(px is None):
                 continue
             probs = probs * self._neg_gaussian_table[np.abs(y - py), np.abs(x - px)]
-            probs = probs / np.sum(probs)
+            probs = probs / (np.sum(probs) + np.sum(self._edge_vals[frame, out_bp]))
 
+        max_edge_val = np.max(self._edge_vals[frame, out_bp])
         max_loc = np.argmax(probs)
-        bp_queue.append((x[max_loc], y[max_loc], probs[max_loc]))
+
+        if(probs[max_loc] >= max_edge_val):
+            bp_queue.append((x[max_loc], y[max_loc], probs[max_loc]))
+        else:
+            bp_queue.append((None, None, None))
 
         self._frame_probs[frame][out_bp] = probs
 
@@ -573,6 +578,39 @@ class ForwardBackward(Predictor):
             self._current_frame -= 1
 
 
+    def _post_forward_backward(self, progress_bar: Optional[tqdm.tqdm],
+                               trans_func: Callable[[ndarray, ndarray, ndarray, ndarray], ndarray],
+                               pre_func: Optional[Callable[[int, int], None]] = None):
+        orig_frames = self._frame_probs
+        orig_edges = np.copy(self._edge_vals)
+
+        # Run forward on data currently stored in "_frame_probs" and "_edge_vals"
+        for f_idx in range(1, self._num_frames):
+            for bp_idx in range(self._total_bp_count):
+                if(pre_func is not None):
+                    pre_func(f_idx, bp_idx)
+                if(self._frame_probs[f_idx - 1][bp_idx] is not None):
+                    self._compute_normal_frame(bp_idx, f_idx, f_idx - 1, trans_func, True)
+            if(progress_bar is not None):
+                progress_bar.update(1)
+
+        # Copy in original data again
+        f_frames = self._frame_probs
+        f_edges = np.copy(self._edge_vals)
+        self._frame_probs = orig_frames
+        self._edge_vals = orig_edges
+
+        for f_idx in range(self._num_frames - 2, -1, -1):
+            for bp_idx in range(self._total_bp_count):
+                if(pre_func is not None):
+                    pre_func(f_idx, bp_idx)
+                if(self._frame_probs[f_idx + 1][bp_idx] is not None):
+                    self._compute_normal_frame(bp_idx, f_idx, f_idx + 1, trans_func, True)
+            if(progress_bar is not None):
+                progress_bar.update(1)
+
+        self._merge_probabilities(f_frames, f_edges, progress_bar)
+
 
     def on_frames(self, scmap: TrackingData) -> None:
         """ Handles Forward part of the Forward/Backward algorithm, allowing for faster post processing. """
@@ -581,7 +619,7 @@ class ForwardBackward(Predictor):
         if(self._gaussian_table is None):
             self._init_data_structures(scmap)
 
-        # Sparcify and store the source map, and then compute the viterbi frames of it....
+        # Sparsify and store the source map, and then compute the forward of it....
         self._sparcify_source_map(scmap)
         self._forward_step(scmap.get_frame_count())
         return None
@@ -589,12 +627,23 @@ class ForwardBackward(Predictor):
 
     def on_end(self, progress_bar: tqdm.tqdm) -> Union[None, Pose]:
         """ Handles backward part of viterbi, and then returns the poses """
-        progress_bar.reset(total=self._num_frames * 3)
+        progress_bar.reset(total=self._num_frames * (7 if(self.NEGATE_ON) else 3))
         self._complete_posterior_probs(progress_bar)
         return self._final_pass(progress_bar)
 
 
     def _final_pass(self, progress_bar: Optional[tqdm.tqdm]) -> Pose:
+        if(self.NEGATE_ON):
+            bp_queue = deque(maxlen=self._total_bp_count - 1)
+
+            for f_idx in range(self._num_frames):
+                for bp_idx in range(self._total_bp_count):
+                    self._compute_bp_neg_frame(bp_idx, f_idx, bp_queue)
+                if(progress_bar is not None):
+                    progress_bar.update(1)
+
+            self._post_forward_backward(progress_bar, self._gaussian_values_at)
+
         # Our final pose object:
         poses = Pose.empty_pose(self._num_frames, self._total_bp_count)
 
@@ -638,17 +687,25 @@ class ForwardBackward(Predictor):
 
         # Take both Forward and Backward results and merge them via multiplication, then normalize the probabilities.
         # If one of the two produces a None frame, we skip these frames.
+        self._merge_probabilities(forward_frames, forward_edges, progress_bar)
+
+
+    def _merge_probabilities(self, to_merge_frame: List[List[ndarray]], to_merge_edges: ndarray,
+                             progress_bar: Optional[tqdm.tqdm]):
+        """ Merges probabilities into _frame_probs and _edge_vals via multiplication. """
         for f_idx in range(self._num_frames):
             for bp_idx in range(self._total_bp_count):
-                if((self._frame_probs[f_idx][bp_idx] is not None) and (forward_frames[f_idx][bp_idx] is not None)):
-                    frame_result = self._frame_probs[f_idx][bp_idx] * forward_frames[f_idx][bp_idx]
-                    edge_result = self._edge_vals[f_idx, bp_idx] * forward_edges[f_idx, bp_idx]
+                if((self._frame_probs[f_idx][bp_idx] is not None) and (to_merge_frame[f_idx][bp_idx] is not None)):
+                    frame_result = self._frame_probs[f_idx][bp_idx] * to_merge_frame[f_idx][bp_idx]
+                    edge_result = self._edge_vals[f_idx, bp_idx] * to_merge_edges[f_idx, bp_idx]
                     total_sum = np.sum(frame_result) + np.sum(edge_result)
                     self._frame_probs[f_idx][bp_idx] = frame_result / total_sum
                     self._edge_vals[f_idx, bp_idx] = edge_result / total_sum
                 else:
                     self._frame_probs[f_idx][bp_idx] = None
-            progress_bar.update(1)
+
+            if(progress_bar is not None):
+                progress_bar.update(1)
 
 
     @classmethod
@@ -670,7 +727,7 @@ class ForwardBackward(Predictor):
             ("negative_impact_factor", "The height of the upside down 2D gaussian curve used for negating locations"
                                        "of prior predicted body parts.", 1),
             ("negative_impact_distance", "The normal distribution of the 2D gaussian curve used for negating locations"
-                                         "of prior predicted body parts.", 1),
+                                         "of prior predicted body parts.", 2),
             ("negation_curve", "Curve to be used for body part negation. Options are 'Gaussian' and 'Quartic'.",
              "Quartic")
         ]
