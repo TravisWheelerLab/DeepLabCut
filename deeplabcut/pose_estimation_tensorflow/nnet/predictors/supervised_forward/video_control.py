@@ -161,12 +161,11 @@ def time_check(time_controller: Connection) -> Optional[int]:
 
     return value
 
-def video_loader(frame_queue: ControlDeque, time_loc: Connection):
-    # Begin by waiting for the location in the video to be set.
+def video_loader(video_hdl: cv2.VideoCapture, frame_queue: ControlDeque, time_loc: Connection):
+    # Begin by waiting for a simple message to give the go ahead to run
     video_file = time_loc.recv()
     if(video_file is None):
         return
-    video_hdl = cv2.VideoCapture(video_file)
 
     while(video_hdl.isOpened()):
         # If a new time was sent through the pipe, set our time to that. Sending none through the pipe stops this
@@ -174,7 +173,6 @@ def video_loader(frame_queue: ControlDeque, time_loc: Connection):
         if(time_loc.poll()):
             new_loc = time_check(time_loc)
             if(new_loc is None):
-                video_hdl.release()
                 return
             video_hdl.set(cv2.CAP_PROP_POS_MSEC, new_loc)
 
@@ -184,7 +182,6 @@ def video_loader(frame_queue: ControlDeque, time_loc: Connection):
         if(not valid_frame):
             new_loc = time_check(time_loc)
             if(new_loc is None):
-                video_hdl.release()
                 return
             video_hdl.set(cv2.CAP_PROP_POS_MSEC, new_loc)
         else:
@@ -198,17 +195,14 @@ class VideoControl(wx.Control):
     BUFFER_SIZE = 50
     BACK_LOAD_AMT = 20
 
-    def __init__(self, parent, w_id=wx.ID_ANY, video_path: str = None, pos=wx.DefaultPosition,
+    def __init__(self, parent, w_id=wx.ID_ANY, video_hdl: cv2.VideoCapture = None, pos=wx.DefaultPosition,
                  size=wx.DefaultSize, style=wx.BORDER_DEFAULT, validator=wx.DefaultValidator, name="VideoControl"):
         super().__init__(parent, w_id, pos, size, style, validator, name)
 
-        video_hdl = cv2.VideoCapture(video_path)
         self._width = video_hdl.get(cv2.CAP_PROP_FRAME_WIDTH)
         self._height = video_hdl.get(cv2.CAP_PROP_FRAME_HEIGHT)
         self._fps = video_hdl.get(cv2.CAP_PROP_FPS)
         self._num_frames = video_hdl.get(cv2.CAP_PROP_FRAME_COUNT)
-        video_hdl.release()
-        del video_hdl
 
         # Useful indicator variables...
         self._playing = False
@@ -231,9 +225,9 @@ class VideoControl(wx.Control):
 
         # Create the video loader to start loading frames:
         receiver, self._sender = Pipe(False)
-        self._video_loader = threading.Thread(target=video_loader, args=(self._front_queue, receiver))
+        self._video_loader = threading.Thread(target=video_loader, args=(video_hdl, self._front_queue, receiver))
         self._video_loader.start()
-        self._sender.send(video_path)
+        self._sender.send(0)
 
         self.Bind(wx.EVT_TIMER, self.on_timer)
         self.Bind(wx.EVT_PAINT, self.on_paint)
@@ -327,7 +321,7 @@ if(__name__ == "__main__"):
 
     app = wx.App()
     wid_frame = wx.Frame(None, title="Test...")
-    wid = VideoControl(wid_frame, video_path=vid_path)
+    wid = VideoControl(wid_frame, video_hdl=cv2.VideoCapture(vid_path))
     # frame.AddChild(wid)
     wid_frame.Show(True)
     wid.play()
