@@ -1,6 +1,7 @@
 from typing import Callable, Any, Optional
 
 import wx
+from wx.lib.newevent import NewCommandEvent
 import cv2
 import queue
 import threading
@@ -8,6 +9,7 @@ from multiprocessing import Pipe
 from multiprocessing.connection import Connection
 from collections import deque
 import numpy as np
+
 
 class ControlDeque:
     """
@@ -24,21 +26,28 @@ class ControlDeque:
         self._not_full = threading.Condition(self._lock)
         self._not_empty = threading.Condition(self._lock)
 
+        self._num_push = 0
         self._cancel_all_ops = threading.Event()
 
     def clear(self):
         """
         Clear the deque. This will also clear any push operations currently waiting.
-
-        :return:
         """
         with self._lock:
-            with self._cancel_all_ops:
-                # Clear all push operations currently waiting
-                self._cancel_all_ops.set()
-                self._not_full.notify()
-                # Clear the deque
-                self._deque.clear()
+            # Clear all push operations currently waiting
+            self._cancel_all_ops.set()
+            self._not_full.notify()
+            # Clear the deque
+            self._deque.clear()
+
+    def flush(self):
+        """
+        Flush any current push events, not actually adding there results to the deque.
+        """
+        with self._lock:
+            # Set the cancel all ops method, and notify all currently waiting events...
+            self._cancel_all_ops.set()
+            self._not_full.notify()
 
     @property
     def maxsize(self):
@@ -71,16 +80,22 @@ class ControlDeque:
                           canceled. (Push events can be canceled if clear is called)
         :return: Whatever is returned by action, if anything. Otherwise returns None.
         """
+        clear_before_enter = push_mode and self._cancel_all_ops.is_set()
+
         with lock:
             if(self.maxsize >= 0):
+                self._num_push += 1
                 while(check() and ((not push_mode) or (not self._cancel_all_ops.is_set()))):
                     lock.wait()
-                if(push_mode and self._cancel_all_ops.is_set()):
-                    with self._cancel_all_ops:
+                if(push_mode and self._cancel_all_ops.is_set() and (not clear_before_enter)):
+                    self._num_push -= 1
+                    if(self._num_push == 0):
                         self._cancel_all_ops.clear()
-                        return
+                    lock.notify()
+                    return
                 result = action()
                 notify.notify()
+                self._num_push -= 1
                 return result
 
 
@@ -124,7 +139,7 @@ class ControlDeque:
         action = lambda: self._deque.pop()
         return self._do_relaxed_op(self._not_empty, check, action, self._not_full)
 
-    def push_left_force(self, value) -> Any:
+    def push_left_force(self, value):
         """
         Push object onto left side of the deque. If there is no space available, we forcefully push the object onto
         the deque, causing the value on the other side of the deque to be deleted.
@@ -135,7 +150,7 @@ class ControlDeque:
             self._deque.appendleft(value)
             self._not_empty.notify()
 
-    def push_right_force(self, value) -> Any:
+    def push_right_force(self, value):
         """
         Push object onto right side of the deque. If there is no space available, we forcefully push the object onto
         the deque, causing the value on the other side of the deque to be deleted.
@@ -145,6 +160,28 @@ class ControlDeque:
         with self._lock:
             self._deque.append(value)
             self._not_empty.notify()
+
+    def pop_left_force(self) -> Any:
+        """
+        Forcefully pop a value from the left side of the deque, throwing an exception if the deque is empty.
+
+        :return: The value left most on the deque.
+        """
+        with self._lock:
+            result = self._deque.popleft()
+            self._not_full.notify()
+            return result
+
+    def pop_right_force(self) -> Any:
+        """
+        Forcefully pop a value from the right side of the deque, throwing an exception if the deque is empty.
+
+        :return: The value right most on the deque.
+        """
+        with self._lock:
+            result = self._deque.pop()
+            self._not_full.notify()
+            return result
 
 
 def time_check(time_controller: Connection) -> Optional[int]:
@@ -156,12 +193,21 @@ def time_check(time_controller: Connection) -> Optional[int]:
     """
     value = -1
 
-    while(value < 0):
+    while((value is not None) and (value < 0)):
         value = time_controller.recv()
 
     return value
 
 def video_loader(video_hdl: cv2.VideoCapture, frame_queue: ControlDeque, time_loc: Connection):
+    """
+    The core video loading function. Loads the video on a separate thread in the background for smooth performance.
+
+    :param video_hdl: The cv2 VideoCapture object to read frames from.
+    :param frame_queue: The ControlDeque to append frames to.
+    :param time_loc: A multiprocessing Connection object, used to control this video loader. Sending a -1 through the
+                    pipe pauses the loader, sending a positive integer sets the offset of this video loader to the
+                    passed integer in milliseconds, and sending None closes this video loader and its associated thread.
+    """
     # Begin by waiting for a simple message to give the go ahead to run
     video_file = time_loc.recv()
     if(video_file is None):
@@ -189,14 +235,34 @@ def video_loader(video_hdl: cv2.VideoCapture, frame_queue: ControlDeque, time_lo
             frame_queue.push_right_relaxed(frame)
 
 
-class VideoControl(wx.Control):
+class VideoPlayer(wx.Control):
+    """
+    A video player for wx Widgets, Using cv2 for solid cross-platform video support. Can play video, but no audio.
+    """
 
     # The number of frames to store in the forward and backward buffer.
     BUFFER_SIZE = 50
     BACK_LOAD_AMT = 20
 
+    FrameChangeEvent, EVT_FRAME_CHANGE = NewCommandEvent()
+    PlayStateChangeEvent, EVT_PLAY_STATE_CHANGE = NewCommandEvent()
+
     def __init__(self, parent, w_id=wx.ID_ANY, video_hdl: cv2.VideoCapture = None, pos=wx.DefaultPosition,
                  size=wx.DefaultSize, style=wx.BORDER_DEFAULT, validator=wx.DefaultValidator, name="VideoControl"):
+        """
+        Create a new VideoPlayer
+
+        :param parent: The wx Control Parent.
+        :param w_id: The wx ID.
+        :param video_hdl: The cv2 VideoCapture to play video from. One should avoid never manipulate the video capture
+                          once passed to this constructor, as the handle will be passed to another thread for fast
+                          video loading.
+        :param pos: The position of the widget.
+        :param size: The size of the widget.
+        :param style: The style of the widget.
+        :param validator: The widgets validator.
+        :param name: The name of the widget.
+        """
         super().__init__(parent, w_id, pos, size, style, validator, name)
 
         self._width = video_hdl.get(cv2.CAP_PROP_FRAME_WIDTH)
@@ -233,15 +299,38 @@ class VideoControl(wx.Control):
         self.Bind(wx.EVT_PAINT, self.on_paint)
         self.Bind(wx.EVT_ERASE_BACKGROUND, lambda evt: None)
 
+    @staticmethod
+    def _resize_video(frame: np.ndarray, width: int, height: int) -> np.ndarray:
+        """
+        Private method. Resizes the passed frame to optimally fit into the specified width and height, while maintaining
+        aspect ratio.
+
+        :param frame: The frame (cv2 image which is really a numpy array) to resize.
+        :param width: The desired width of the resized frame.
+        :param height: The desired height of the resized frame.
+        :return: A new numpy array, being the resized version of the frame.
+        """
+        frame_aspect = frame.shape[0] / frame.shape[1]  # <-- Height / Width
+        passed_aspect = height / width
+
+        if(passed_aspect <= frame_aspect):
+            # Passed aspect has less height per unit width, so height is the limiting dimension
+            return cv2.resize(frame, (int(height / frame_aspect), height), interpolation=cv2.INTER_LINEAR)
+        else:
+            # Otherwise the width is the limiting dimension
+            return cv2.resize(frame, (width, int(width * frame_aspect)), interpolation=cv2.INTER_LINEAR)
 
     def on_paint(self, event):
+        """ Run on a paint event, redraws the widget. """
         painter = wx.BufferedPaintDC(self)
-
         self.on_draw(painter)
 
-
     def on_draw(self, dc: wx.BufferedPaintDC):
+        """
+        Draws the widget.
 
+        :param dc: The wx DC to use for drawing.
+        """
         width, height = self.GetClientSize()
 
         if((not width) or (not height)):
@@ -250,36 +339,53 @@ class VideoControl(wx.Control):
         dc.SetBackground(wx.Brush(self.GetBackgroundColour(), wx.BRUSHSTYLE_SOLID))
         dc.Clear()
 
+        resized_frame = self._resize_video(self._current_frame, width, height)
+
         # Draw the video background
-        b_h, b_w = self._current_frame.shape[:2]
-        bitmap = wx.Bitmap.FromBuffer(b_w, b_h, self._current_frame[:, :, ::-1].astype(dtype=np.uint8))
+        b_h, b_w = resized_frame.shape[:2]
+        bitmap = wx.Bitmap.FromBuffer(b_w, b_h, resized_frame[:, :, ::-1].astype(dtype=np.uint8))
 
         loc_x = (width - b_w) // 2
         loc_y = (height - b_h) // 2
 
         dc.DrawBitmap(bitmap, loc_x, loc_y)
 
+    def _push_time_change_event(self):
+        """ Private, used to specify how long the event should  """
+        new_event = self.FrameChangeEvent(id=self.Id, frame=self.get_offset_count(), time=self.get_offset_millis())
+        wx.PostEvent(self, new_event)
+
     def on_timer(self, event):
         if(self._playing):
+            # If we have reached the end of the video, pause the video and don't perform a frame update as
+            # we will deadlock the system by waiting for a frame forever...
             if(self._current_loc >= (self._num_frames - 1)):
                 self.pause()
                 return
+            # Get the next frame and set it as the current frame
             self._current_frame = self._front_queue.pop_left_relaxed()
             self._current_loc += 1
+            # Post a frame change event.
+            self._push_time_change_event()
+            # Trigger a redraw on the next pass through the loop and start the timer to play the next frame...
             self.Refresh()
             self.Update() # Force a redraw....
             self._core_timer.StartOnce(1000 / self._fps)
 
     def play(self):
-        self._playing = True
-        self.on_timer(None)
+        if(not self.is_playing()):
+            self._playing = True
+            wx.PostEvent(self, self.PlayStateChangeEvent(id=self.Id, playing=True, stop_triggered = False))
+            self.on_timer(None)
 
     def stop(self):
         self._playing = False
+        wx.PostEvent(self, self.PlayStateChangeEvent(id=self.Id, playing=False, stop_triggered = True))
         self.set_offset_frames(0)
 
     def pause(self):
         self._playing = False
+        wx.PostEvent(self, self.PlayStateChangeEvent(id=self.Id, playing=False, stop_triggered = False))
 
     def is_playing(self):
         return self._playing
@@ -296,7 +402,10 @@ class VideoControl(wx.Control):
     def set_offset_millis(self, value: int):
         self.set_offset_frames(int(value / (1000 / self._fps)))
 
-    def set_offset_frames(self, value: int):
+    def _full_jump(self, value: int):
+        current_state = self.is_playing()
+        self._playing = False
+
         # Determine how many more frames we can go back.
         go_back_frames = min(value, self.BACK_LOAD_AMT)
         self._current_loc = value
@@ -309,20 +418,112 @@ class VideoControl(wx.Control):
         for i in range(go_back_frames):
             self._back_queue.append(self._front_queue.pop_left_relaxed())
 
+        self._push_time_change_event()
+        # Restore play state prior to frame change...
+        self._playing = current_state
+        self._core_timer.StartOnce(1000 / self._fps)
+
+
+    def _fast_back(self, amount: int):
+        current_state = self.is_playing()
+        self._playing = False
+
+        # Pause the video player, flush any push events it is trying to do.
+        self._sender.send(-1)
+        self._front_queue.flush()
+
+        # Move back the passed amount of frames.
+        for i in range(amount):
+            self._current_frame = self._back_queue.pop()
+            self._front_queue.push_left_force(self._current_frame)
+        self._current_loc = self._current_loc - amount
+
+        # Move the video play to how far ahead it would be after moving back this many frames...
+        self._sender.send(self._frame_index_to_millis(max(self._num_frames - 1, self._current_loc + self.BUFFER_SIZE)))
+
+        self._push_time_change_event()
+
+        self._playing = current_state
+        self._core_timer.StartOnce(1000 / self._fps)
+
+    def _fast_forward(self, amount: int):
+        current_state = self.is_playing()
+        self._playing = False
+
+        # Move the passed amount of frames forward. Video reader will automatically move forward with us...
+        for i in range(amount):
+            self._back_queue.append(self._front_queue.pop_left_force())
+        self._current_loc = self._current_loc + amount
+
+        self._push_time_change_event()
+
+        self._playing = current_state
+        self._core_timer.StartOnce(1000 / self._fps)
+
+    def move_back(self, amount: int = 1):
+        # Check if movement is valid...
+        if(amount <= 0):
+            raise ValueError("Offset must be positive!")
+        if(self._current_loc - amount < 0):
+            raise ValueError(f"Can't go back {amount} frames when at frame {self._current_loc}.")
+        # Check if we can perform a 'fast' backtrack, where we have all of the frames in the queue. If not perform
+        # a more computationally expensive full jump.
+        if(amount > len(self._back_queue)):
+            self._full_jump(self._current_loc - amount)
+        else:
+            self._fast_back(amount)
+
+    def move_forward(self, amount: int = 1):
+        # Check if movement is valid...
+        if(amount <= 0):
+            raise ValueError("Offset must be positive!")
+        if(self._current_loc + amount >= self._num_frames):
+            raise ValueError(f"Can't go forward {amount} frames when at frame {self._current_loc}.")
+        # Check if we can do a fast forward, which is basically the same as moving through frames normally...
+        # Otherwise we perform a more expensive full jump.
+        if(amount > len(self._front_queue)):
+            self._full_jump(self._current_loc + amount)
+        else:
+            self._fast_forward(amount)
+
+
+    def set_offset_frames(self, value: int):
+        # Is this a valid frame value?
+        if(not (0 <= value < self._num_frames)):
+            raise ValueError(f"Can't set frame index to {value}, there is only {self._num_frames} frames.")
+        # Determine which way the value is moving the current video location, and move backward/forward based on that.
+        if(value < self._current_loc):
+            self.move_back(self._current_loc - value)
+        elif(value > self._current_loc):
+            self.move_forward(value - self._current_loc)
+
     def _frame_index_to_millis(self, frame_idx):
         return (1000 / self._fps) * frame_idx
 
     def __del__(self):
         self._sender.send(None)
+        self._front_queue.clear()
         self._sender.close()
+
 
 if(__name__ == "__main__"):
     vid_path = "/home/isaac/Code/MultiTrackTest7-IsaacRobinson-2020-03-04/videos/TestVideos/V2cut.mp4"
 
     app = wx.App()
     wid_frame = wx.Frame(None, title="Test...")
-    wid = VideoControl(wid_frame, video_hdl=cv2.VideoCapture(vid_path))
+    wid = VideoPlayer(wid_frame, video_hdl=cv2.VideoCapture(vid_path))
+
+    # wid.Bind(wid.EVT_FRAME_CHANGE, lambda evt: print(evt.frame))
+    wid.Bind(wid.EVT_PLAY_STATE_CHANGE, lambda evt: print(evt.playing))
     # frame.AddChild(wid)
     wid_frame.Show(True)
+
+    def destroy(evt):
+        global wid
+        del wid
+        wid_frame.Destroy()
+
+    wid_frame.Bind(wx.EVT_CLOSE, destroy)
     wid.play()
     app.MainLoop()
+    exit()
