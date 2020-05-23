@@ -505,6 +505,77 @@ class VideoPlayer(wx.Control):
         self._front_queue.clear()
         self._sender.close()
 
+class VideoController(wx.Control):
+
+    PLAY_SYMBOL = "\u25B6"
+    PAUSE_SYMBOL = "\u23F8"
+    STOP_SYMBOL = "\u23F9"
+    FRAME_BACK_SYMBOL = "\u21b6"
+    FRAME_FORWARD_SYMBOL = "\u21b7"
+
+    def __init__(self, parent = None, w_id=wx.ID_ANY, video_player: VideoPlayer = None, pos=wx.DefaultPosition,
+                 size=wx.DefaultSize, style=wx.BORDER_DEFAULT, validator=wx.DefaultValidator, name="VideoController"):
+        super().__init__(parent, w_id, pos, size, style, validator, name)
+
+        if(video_player is None):
+            raise ValueError("Have to pass a VideoPlayer!!!")
+
+        self._video_player = video_player
+
+        self._sizer = wx.BoxSizer(wx.HORIZONTAL)
+
+        self._back_btn = wx.Button(label=self.FRAME_BACK_SYMBOL)
+        self._play_pause_btn = wx.Button(label=self.PLAY_SYMBOL)
+        self._stop_btn = wx.Button(label=self.STOP_SYMBOL)
+        self._forward_btn = wx.Button(label=self.FRAME_FORWARD_SYMBOL)
+
+        self._slider_control = wx.Slider(value=0, minValue=0, maxValue=video_player.get_total_frames() - 1,
+                                         style=wx.SL_HORIZONTAL | wx.SL_LABELS)
+
+        self._sizer.Add(self._back_btn, 0, wx.EXPAND)
+        self._sizer.Add(self._play_pause_btn, 0, wx.EXPAND)
+        self._sizer.Add(self._stop_btn, 0, wx.EXPAND)
+        self._sizer.Add(self._forward_btn, 0, wx.EXPAND)
+        self._sizer.Add(self._slider_control, 1, wx.EXPAND)
+
+        self.SetSizer(self._sizer)
+
+        self.SetInitialSize(self._sizer.GetSize())
+
+        self._video_player.Bind(VideoPlayer.EVT_FRAME_CHANGE, self.frame_change)
+        self._video_player.Bind(VideoPlayer.EVT_PLAY_STATE_CHANGE, self.on_play_switch)
+        self._slider_control.Bind(wx.EVT_SLIDER, self.on_slide)
+        self._play_pause_btn.Bind(wx.EVT_BUTTON, self.on_play_pause_press)
+        self._back_btn.Bind(wx.EVT_BUTTON, self.on_back_press)
+        self._forward_btn.Bind(wx.EVT_BUTTON, self.on_forward_press)
+        self._stop_btn.Bind(wx.EVT_BUTTON, self._video_player.stop())
+
+    def frame_change(self, event):
+        frame, time = event.frame, event.time
+        self._slider_control.SetValue(frame)
+        self._back_btn.Enable(frame > 0)
+        self._forward_btn.Enable(frame < (self._video_player.get_total_frames() - 1))
+
+    def on_play_switch(self, event):
+        self._play_pause_btn.SetLabel(self.PAUSE_SYMBOL if(event.playing) else self.PLAY_SYMBOL)
+
+    def on_slide(self, event):
+        self._video_player.set_offset_frames(self._slider_control.GetValue())
+
+    def on_play_pause_press(self, event):
+        if(self._video_player.is_playing()):
+            self._video_player.pause()
+        else:
+            self._video_player.play()
+
+    def on_back_press(self, event):
+        if(self._video_player.get_offset_count() > 0):
+            self._video_player.move_back()
+
+    def on_forward_press(self, event):
+        if(self._video_player.get_offset_count() < (self._video_player.get_total_frames() - 1)):
+            self._video_player.move_forward()
+
 
 if(__name__ == "__main__"):
     vid_path = "/home/isaac/Code/MultiTrackTest7-IsaacRobinson-2020-03-04/videos/TestVideos/V2cut.mp4"
@@ -526,4 +597,3 @@ if(__name__ == "__main__"):
     wid_frame.Bind(wx.EVT_CLOSE, destroy)
     wid.play()
     app.MainLoop()
-    exit()
