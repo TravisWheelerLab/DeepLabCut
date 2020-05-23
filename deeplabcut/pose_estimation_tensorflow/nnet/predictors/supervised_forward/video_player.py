@@ -248,7 +248,7 @@ class VideoPlayer(wx.Control):
     PlayStateChangeEvent, EVT_PLAY_STATE_CHANGE = NewCommandEvent()
 
     def __init__(self, parent, w_id=wx.ID_ANY, video_hdl: cv2.VideoCapture = None, pos=wx.DefaultPosition,
-                 size=wx.DefaultSize, style=wx.BORDER_DEFAULT, validator=wx.DefaultValidator, name="VideoControl"):
+                 size=wx.DefaultSize, style=wx.BORDER_DEFAULT, validator=wx.DefaultValidator, name="VideoPlayer"):
         """
         Create a new VideoPlayer
 
@@ -379,6 +379,7 @@ class VideoPlayer(wx.Control):
             self.on_timer(None)
 
     def stop(self):
+        print("Stopping...")
         self._playing = False
         wx.PostEvent(self, self.PlayStateChangeEvent(id=self.Id, playing=False, stop_triggered = True))
         self.set_offset_frames(0)
@@ -416,7 +417,8 @@ class VideoPlayer(wx.Control):
         # Tell the video loader to go to the new track location, and pop the extra frames we load on the back...
         self._sender.send(self._frame_index_to_millis(value - go_back_frames))
         for i in range(go_back_frames):
-            self._back_queue.append(self._front_queue.pop_left_relaxed())
+            self._current_frame = self._front_queue.pop_left_relaxed()
+            self._back_queue.append(self._current_frame)
 
         self._push_time_change_event()
         # Restore play state prior to frame change...
@@ -505,7 +507,8 @@ class VideoPlayer(wx.Control):
         self._front_queue.clear()
         self._sender.close()
 
-class VideoController(wx.Control):
+
+class VideoController(wx.Panel):
 
     PLAY_SYMBOL = "\u25B6"
     PAUSE_SYMBOL = "\u23F8"
@@ -513,9 +516,9 @@ class VideoController(wx.Control):
     FRAME_BACK_SYMBOL = "\u21b6"
     FRAME_FORWARD_SYMBOL = "\u21b7"
 
-    def __init__(self, parent = None, w_id=wx.ID_ANY, video_player: VideoPlayer = None, pos=wx.DefaultPosition,
-                 size=wx.DefaultSize, style=wx.BORDER_DEFAULT, validator=wx.DefaultValidator, name="VideoController"):
-        super().__init__(parent, w_id, pos, size, style, validator, name)
+    def __init__(self,parent, w_id = wx.ID_ANY, video_player: VideoPlayer = None, pos = wx.DefaultPosition,
+                 size = wx.DefaultSize, style = wx.TAB_TRAVERSAL, name = "VideoController"):
+        super().__init__(parent, w_id, pos, size, style, name)
 
         if(video_player is None):
             raise ValueError("Have to pass a VideoPlayer!!!")
@@ -524,23 +527,22 @@ class VideoController(wx.Control):
 
         self._sizer = wx.BoxSizer(wx.HORIZONTAL)
 
-        self._back_btn = wx.Button(label=self.FRAME_BACK_SYMBOL)
-        self._play_pause_btn = wx.Button(label=self.PLAY_SYMBOL)
-        self._stop_btn = wx.Button(label=self.STOP_SYMBOL)
-        self._forward_btn = wx.Button(label=self.FRAME_FORWARD_SYMBOL)
+        self._back_btn = wx.Button(self, label=self.FRAME_BACK_SYMBOL)
+        self._play_pause_btn = wx.Button(self, label=self.PLAY_SYMBOL)
+        self._stop_btn = wx.Button(self, label=self.STOP_SYMBOL)
+        self._forward_btn = wx.Button(self, label=self.FRAME_FORWARD_SYMBOL)
 
-        self._slider_control = wx.Slider(value=0, minValue=0, maxValue=video_player.get_total_frames() - 1,
+        self._slider_control = wx.Slider(self, value=0, minValue=0, maxValue=video_player.get_total_frames() - 1,
                                          style=wx.SL_HORIZONTAL | wx.SL_LABELS)
 
-        self._sizer.Add(self._back_btn, 0, wx.EXPAND)
-        self._sizer.Add(self._play_pause_btn, 0, wx.EXPAND)
-        self._sizer.Add(self._stop_btn, 0, wx.EXPAND)
-        self._sizer.Add(self._forward_btn, 0, wx.EXPAND)
+        self._sizer.Add(self._back_btn, 0, wx.ALIGN_CENTER)
+        self._sizer.Add(self._play_pause_btn, 0, wx.ALIGN_CENTER)
+        self._sizer.Add(self._stop_btn, 0, wx.ALIGN_CENTER)
+        self._sizer.Add(self._forward_btn, 0, wx.ALIGN_CENTER)
         self._sizer.Add(self._slider_control, 1, wx.EXPAND)
 
+        self._sizer.SetSizeHints(self)
         self.SetSizer(self._sizer)
-
-        self.SetInitialSize(self._sizer.GetSize())
 
         self._video_player.Bind(VideoPlayer.EVT_FRAME_CHANGE, self.frame_change)
         self._video_player.Bind(VideoPlayer.EVT_PLAY_STATE_CHANGE, self.on_play_switch)
@@ -548,9 +550,10 @@ class VideoController(wx.Control):
         self._play_pause_btn.Bind(wx.EVT_BUTTON, self.on_play_pause_press)
         self._back_btn.Bind(wx.EVT_BUTTON, self.on_back_press)
         self._forward_btn.Bind(wx.EVT_BUTTON, self.on_forward_press)
-        self._stop_btn.Bind(wx.EVT_BUTTON, self._video_player.stop())
+        self._stop_btn.Bind(wx.EVT_BUTTON, lambda evt: self._video_player.stop())
 
     def frame_change(self, event):
+        print(f"Frame Change to: {event.frame}")
         frame, time = event.frame, event.time
         self._slider_control.SetValue(frame)
         self._back_btn.Enable(frame > 0)
@@ -582,12 +585,23 @@ if(__name__ == "__main__"):
 
     app = wx.App()
     wid_frame = wx.Frame(None, title="Test...")
-    wid = VideoPlayer(wid_frame, video_hdl=cv2.VideoCapture(vid_path))
+    panel = wx.Panel(parent=wid_frame)
 
-    # wid.Bind(wid.EVT_FRAME_CHANGE, lambda evt: print(evt.frame))
-    wid.Bind(wid.EVT_PLAY_STATE_CHANGE, lambda evt: print(evt.playing))
-    # frame.AddChild(wid)
+    sizer = wx.BoxSizer(wx.VERTICAL)
+
+    wid = VideoPlayer(panel, video_hdl=cv2.VideoCapture(vid_path))
+    obj2 = VideoController(panel, video_player=wid)
+
+    sizer.Add(wid, 0, wx.EXPAND)
+    sizer.Add(obj2, 0, wx.EXPAND)
+
+    sizer.SetSizeHints(panel)
+    panel.SetSizer(sizer)
+
+    wid_frame.Fit()
+
     wid_frame.Show(True)
+
 
     def destroy(evt):
         global wid
