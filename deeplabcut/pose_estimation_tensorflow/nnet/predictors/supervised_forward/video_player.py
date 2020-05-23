@@ -10,6 +10,7 @@ from multiprocessing.connection import Connection
 from collections import deque
 import numpy as np
 
+# TODO: Fix off by 1 error in VideoPlayer (We miss playing the very last frame!)
 
 class ControlDeque:
     """
@@ -83,6 +84,9 @@ class ControlDeque:
         clear_before_enter = push_mode and self._cancel_all_ops.is_set()
 
         with lock:
+            if (self._num_push == 0):
+                self._cancel_all_ops.clear()
+
             if(self.maxsize >= 0):
                 self._num_push += 1
                 while(check() and ((not push_mode) or (not self._cancel_all_ops.is_set()))):
@@ -339,6 +343,9 @@ class VideoPlayer(wx.Control):
         dc.SetBackground(wx.Brush(self.GetBackgroundColour(), wx.BRUSHSTYLE_SOLID))
         dc.Clear()
 
+        if(self._current_frame is None):
+            return
+
         resized_frame = self._resize_video(self._current_frame, width, height)
 
         # Draw the video background
@@ -360,17 +367,18 @@ class VideoPlayer(wx.Control):
             # If we have reached the end of the video, pause the video and don't perform a frame update as
             # we will deadlock the system by waiting for a frame forever...
             if(self._current_loc >= (self._num_frames - 1)):
+                print(len(self._front_queue))
                 self.pause()
                 return
             # Get the next frame and set it as the current frame
+            self._back_queue.append(self._current_frame)
             self._current_frame = self._front_queue.pop_left_relaxed()
             self._current_loc += 1
             # Post a frame change event.
             self._push_time_change_event()
             # Trigger a redraw on the next pass through the loop and start the timer to play the next frame...
-            self.Refresh()
-            self.Update() # Force a redraw....
             self._core_timer.StartOnce(1000 / self._fps)
+        self.Refresh()  # Force a redraw....
 
     def play(self):
         if(not self.is_playing()):
@@ -379,7 +387,6 @@ class VideoPlayer(wx.Control):
             self.on_timer(None)
 
     def stop(self):
-        print("Stopping...")
         self._playing = False
         wx.PostEvent(self, self.PlayStateChangeEvent(id=self.Id, playing=False, stop_triggered = True))
         self.set_offset_frames(0)
@@ -423,6 +430,7 @@ class VideoPlayer(wx.Control):
         self._push_time_change_event()
         # Restore play state prior to frame change...
         self._playing = current_state
+        self.Refresh()
         self._core_timer.StartOnce(1000 / self._fps)
 
 
@@ -441,11 +449,12 @@ class VideoPlayer(wx.Control):
         self._current_loc = self._current_loc - amount
 
         # Move the video play to how far ahead it would be after moving back this many frames...
-        self._sender.send(self._frame_index_to_millis(max(self._num_frames - 1, self._current_loc + self.BUFFER_SIZE)))
+        self._sender.send(self._frame_index_to_millis(min(self._num_frames - 1, self._current_loc + len(self._front_queue))))
 
         self._push_time_change_event()
 
         self._playing = current_state
+        self.Refresh()
         self._core_timer.StartOnce(1000 / self._fps)
 
     def _fast_forward(self, amount: int):
@@ -454,12 +463,14 @@ class VideoPlayer(wx.Control):
 
         # Move the passed amount of frames forward. Video reader will automatically move forward with us...
         for i in range(amount):
-            self._back_queue.append(self._front_queue.pop_left_force())
+            self._current_frame = self._front_queue.pop_left_force()
+            self._back_queue.append(self._current_frame)
         self._current_loc = self._current_loc + amount
 
         self._push_time_change_event()
 
         self._playing = current_state
+        self.Refresh()
         self._core_timer.StartOnce(1000 / self._fps)
 
     def move_back(self, amount: int = 1):
@@ -553,7 +564,6 @@ class VideoController(wx.Panel):
         self._stop_btn.Bind(wx.EVT_BUTTON, lambda evt: self._video_player.stop())
 
     def frame_change(self, event):
-        print(f"Frame Change to: {event.frame}")
         frame, time = event.frame, event.time
         self._slider_control.SetValue(frame)
         self._back_btn.Enable(frame > 0)
@@ -609,5 +619,4 @@ if(__name__ == "__main__"):
         wid_frame.Destroy()
 
     wid_frame.Bind(wx.EVT_CLOSE, destroy)
-    wid.play()
     app.MainLoop()
