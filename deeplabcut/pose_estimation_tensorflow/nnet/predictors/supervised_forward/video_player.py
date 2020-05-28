@@ -10,7 +10,7 @@ from multiprocessing.connection import Connection
 from collections import deque
 import numpy as np
 
-# TODO: Fix off by 1 error in VideoPlayer (We miss playing the very last frame!)
+# TODO: Random frame off by 1 when dragging slider
 
 class ControlDeque:
     """
@@ -282,10 +282,6 @@ class VideoPlayer(wx.Control):
         self._back_queue = deque(maxlen=self.BACK_LOAD_AMT)
         self._current_loc = 0
 
-        # The queue which stores frames...
-        self._frames_future = queue.Queue(maxsize=self.BUFFER_SIZE)
-        self._frames_past = queue.Queue(maxsize=self.BUFFER_SIZE)
-
         size = wx.Size(self._width, self._height)
         self.SetMinSize(size)
         self.SetInitialSize(size)
@@ -298,6 +294,8 @@ class VideoPlayer(wx.Control):
         self._video_loader = threading.Thread(target=video_loader, args=(video_hdl, self._front_queue, receiver))
         self._video_loader.start()
         self._sender.send(0)
+
+        self._current_frame = self._front_queue.pop_left_relaxed()
 
         self.Bind(wx.EVT_TIMER, self.on_timer)
         self.Bind(wx.EVT_PAINT, self.on_paint)
@@ -411,6 +409,7 @@ class VideoPlayer(wx.Control):
         self.set_offset_frames(int(value / (1000 / self._fps)))
 
     def _full_jump(self, value: int):
+        print("Full Jump")
         current_state = self.is_playing()
         self._playing = False
 
@@ -421,11 +420,13 @@ class VideoPlayer(wx.Control):
         self._sender.send(-1) # Tell the video loader to stop.
 
         self._front_queue.clear() # Completely wipe the queue
+        self._back_queue.clear()
         # Tell the video loader to go to the new track location, and pop the extra frames we load on the back...
         self._sender.send(self._frame_index_to_millis(value - go_back_frames))
         for i in range(go_back_frames):
-            self._current_frame = self._front_queue.pop_left_relaxed()
-            self._back_queue.append(self._current_frame)
+            self._back_queue.append(self._front_queue.pop_left_relaxed())
+
+        self._current_frame = self._front_queue.pop_left_relaxed()
 
         self._push_time_change_event()
         # Restore play state prior to frame change...
@@ -435,36 +436,39 @@ class VideoPlayer(wx.Control):
 
 
     def _fast_back(self, amount: int):
+        print("Fast Back")
         current_state = self.is_playing()
         self._playing = False
 
         # Pause the video player, flush any push events it is trying to do.
         self._sender.send(-1)
-        self._front_queue.flush()
+        self._front_queue.clear()
 
         # Move back the passed amount of frames.
         for i in range(amount):
-            self._current_frame = self._back_queue.pop()
             self._front_queue.push_left_force(self._current_frame)
+            self._current_frame = self._back_queue.pop()
         self._current_loc = self._current_loc - amount
 
         # Move the video play to how far ahead it would be after moving back this many frames...
-        self._sender.send(self._frame_index_to_millis(min(self._num_frames - 1, self._current_loc + len(self._front_queue))))
+        self._sender.send(self._frame_index_to_millis(min(self._num_frames, self._current_loc + len(self._front_queue) + 1)))
 
         self._push_time_change_event()
 
         self._playing = current_state
         self.Refresh()
         self._core_timer.StartOnce(1000 / self._fps)
+        print("Fast Back Exit")
 
     def _fast_forward(self, amount: int):
+        print("Fast Forward")
         current_state = self.is_playing()
         self._playing = False
 
         # Move the passed amount of frames forward. Video reader will automatically move forward with us...
         for i in range(amount):
-            self._current_frame = self._front_queue.pop_left_force()
             self._back_queue.append(self._current_frame)
+            self._current_frame = self._front_queue.pop_left_force()
         self._current_loc = self._current_loc + amount
 
         self._push_time_change_event()
@@ -481,7 +485,7 @@ class VideoPlayer(wx.Control):
             raise ValueError(f"Can't go back {amount} frames when at frame {self._current_loc}.")
         # Check if we can perform a 'fast' backtrack, where we have all of the frames in the queue. If not perform
         # a more computationally expensive full jump.
-        if(amount > len(self._back_queue)):
+        if(amount >= len(self._back_queue)):
             self._full_jump(self._current_loc - amount)
         else:
             self._fast_back(amount)
