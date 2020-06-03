@@ -13,9 +13,8 @@ from os import PathLike
 from deeplabcut.pose_estimation_tensorflow.nnet.processing import Predictor
 from deeplabcut.utils import auxiliaryfunctions
 from deeplabcut.pose_estimation_tensorflow.nnet import processing
-from deeplabcut.pose_estimation_tensorflow.predict_videos import GetPredictorSettings
+from deeplabcut.pose_estimation_tensorflow.predict_videos import GetPredictorSettings, GetPandasHeader
 from pathlib import Path
-import pandas as pd
 import numpy as np
 import deeplabcut.pose_estimation_tensorflow.util.frame_store_fmt as frame_store_fmt
 import tqdm
@@ -125,7 +124,7 @@ def _resolve_videos(frame_store_paths: List[Path], video_folders: Optional[List[
     for idx, path in enumerate(frame_store_paths):
         name = "~".join(path.stem.split("~")[:-1])
         if(name.strip() != ""):
-            suspect_video = (path.parent) / (name)
+            suspect_video = (path.resolve().parent) / (name)
             if(suspect_video.exists()):
                 video_paths[idx] = suspect_video
 
@@ -137,45 +136,15 @@ def _sanitize_path_arg(paths: Union[None, Iterable[Pathy], Pathy]) -> Optional[L
     Sanitizes a pathlike or list of pathlike argument and returns a list of Path, or None if rogue data was passed...
     """
     if(isinstance(paths, (PathLike, str))):
-        return [Path(str(paths))]
+        return [Path(str(paths)).resolve()]
     elif(isinstance(paths, Iterable) ):
         paths = list(paths)
         if(len(paths) > 0):
-            return [Path(str(path)) for path in paths]
+            return [Path(str(path)).resolve() for path in paths]
         else:
             return None
     else:
         return None
-
-
-def _get_pandas_header(body_parts: List[str], num_outputs: int, out_format: str, dlc_scorer: str) -> pd.MultiIndex:
-    """
-    Creates the pandas data header for the passed body parts and number of outputs.
-
-    :param body_parts: The list of body part names. List of strings.
-    :param num_outputs: The number of outputs per body part, and integer.
-    :param out_format: The output format, either 'separate-bodyparts' or 'default'.
-    :param dlc_scorer: A string, being the name of the DLC Scorer for this DLC instance.
-    :return: A pandas MultiIndex, being the header entries for the DLC output data.
-    """
-    # Set this up differently depending on the format...
-    if(out_format == "separate-bodyparts" and num_outputs > 1):
-        # Format which allocates new bodyparts for each prediction by simply adding "__number" to the end of the part's
-        # name.
-        print("Outputting predictions as separate body parts...")
-        suffixes = [f"__{i + 1}" for i in range(num_outputs)]
-        suffixes[0] = ""
-        all_joints = [bp + s for bp in body_parts for s in suffixes]
-        return pd.MultiIndex.from_product([[dlc_scorer], all_joints, ['x', 'y', 'likelihood']],
-                                             names=['scorer', 'bodyparts', 'coords'])
-    else:
-        # The original multi output format, multiple predictions stored under each body part
-        out_format = "default"
-        suffixes = [str(i + 1) for i in range(num_outputs)]
-        suffixes[0] = ""
-        sub_headers = [state + s for s in suffixes for state in ['x', 'y', 'likelihood']]
-        return pd.MultiIndex.from_product([[dlc_scorer], body_parts, sub_headers],
-                                             names=['scorer', 'bodyparts', 'coords'])
 
 
 def _analyze_frame_store(cfg: dict, frame_store_path: Path, video_name: Optional[str], dlc_scorer: str,
@@ -198,7 +167,7 @@ def _analyze_frame_store(cfg: dict, frame_store_path: Path, video_name: Optional
             # Read in the header, setup the settings.
             frame_reader = frame_store_fmt.DLCFSReader(fb)
             num_f, f_h, f_w, f_rate, stride, vid_h, vid_w, off_y, off_x, bp_lst = frame_reader.get_header().to_list()
-            pd_index = _get_pandas_header(bp_lst, num_outputs, multi_output_format, dlc_scorer)
+            pd_index = GetPandasHeader(bp_lst, num_outputs, multi_output_format, dlc_scorer)
 
             predictor_settings = GetPredictorSettings(cfg, predictor_cls, predictor_settings)
 
@@ -207,7 +176,7 @@ def _analyze_frame_store(cfg: dict, frame_store_path: Path, video_name: Optional
                 "duration": float(num_f) / f_rate,
                 "size": (vid_h, vid_w),
                 "h5-file-name": data_name,
-                "orig-video-path": video_name, # This may be None if we were unable to find the video...
+                "orig-video-path": str(video_name) if (video_name is not None) else None, # This may be None if we were unable to find the video...
                 "cropping-offset": None if(off_x is None or off_y is None) else (off_y, off_x)
             }
 
@@ -250,7 +219,7 @@ def _analyze_frame_store(cfg: dict, frame_store_path: Path, video_name: Optional
             # Check and make sure the predictor returned all frames, otherwise throw an error.
             if (frames_done != num_f):
                 raise ValueError(
-                    f"The predictor algorithm did not return the same amount of frames as are in the video.\n"
+                    f"The predictor algorithm did not return the same amount of frames as are in the frame store.\n"
                     f"Expected Amount: {num_f}, Actual Amount Returned: {frames_done}")
 
             stop = time.time()
