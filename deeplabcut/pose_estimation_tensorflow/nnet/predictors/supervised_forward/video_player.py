@@ -1,3 +1,7 @@
+"""
+Module contains a wx video player widget and a wx video controller widget. Uses multi-threading to load frames to a
+deque while playing them, allowing for smoother playback...
+"""
 from typing import Callable, Any, Optional
 
 import wx
@@ -8,6 +12,7 @@ from multiprocessing import Pipe
 from multiprocessing.connection import Connection
 from collections import deque
 import numpy as np
+from deeplabcut.pose_estimation_tensorflow.nnet.predictors.supervised_forward.probability_displayer import ProbabilityDisplayer
 
 
 class ControlDeque:
@@ -245,6 +250,8 @@ class VideoPlayer(wx.Control):
     BUFFER_SIZE = 50
     BACK_LOAD_AMT = 20
 
+    # Events for the VideoPlayer class, one triggered for every frame change, and one triggered for every change in
+    # play state (starting, stopping, pausing, etc....)
     FrameChangeEvent, EVT_FRAME_CHANGE = NewCommandEvent()
     PlayStateChangeEvent, EVT_PLAY_STATE_CHANGE = NewCommandEvent()
 
@@ -269,7 +276,7 @@ class VideoPlayer(wx.Control):
         self._width = video_hdl.get(cv2.CAP_PROP_FRAME_WIDTH)
         self._height = video_hdl.get(cv2.CAP_PROP_FRAME_HEIGHT)
         self._fps = video_hdl.get(cv2.CAP_PROP_FPS)
-        self._num_frames = video_hdl.get(cv2.CAP_PROP_FRAME_COUNT)
+        self._num_frames = int(video_hdl.get(cv2.CAP_PROP_FRAME_COUNT))
 
         # Useful indicator variables...
         self._playing = False
@@ -400,7 +407,7 @@ class VideoPlayer(wx.Control):
         return self._current_loc
 
     def get_total_frames(self):
-        return self._num_frames
+        return int(self._num_frames)
 
     def set_offset_millis(self, value: int):
         self.set_offset_frames(int(value / (1000 / self._fps)))
@@ -437,7 +444,7 @@ class VideoPlayer(wx.Control):
 
         # Pause the video player, flush any push events it is trying to do.
         self._sender.send(-1)
-        self._front_queue.clear()
+        self._front_queue.flush()
 
         # Move back the passed amount of frames.
         for i in range(amount):
@@ -495,7 +502,6 @@ class VideoPlayer(wx.Control):
             self._full_jump(self._current_loc + amount)
         else:
             self._fast_forward(amount)
-
 
     def set_offset_frames(self, value: int):
         # Is this a valid frame value?
@@ -565,6 +571,7 @@ class VideoController(wx.Panel):
         self._slider_control.SetValue(frame)
         self._back_btn.Enable(frame > 0)
         self._forward_btn.Enable(frame < (self._video_player.get_total_frames() - 1))
+        wx.PostEvent(self, event)
 
     def on_play_switch(self, event):
         self._play_pause_btn.SetLabel(self.PAUSE_SYMBOL if(event.playing) else self.PLAY_SYMBOL)
@@ -597,9 +604,13 @@ if(__name__ == "__main__"):
     sizer = wx.BoxSizer(wx.VERTICAL)
 
     wid = VideoPlayer(panel, video_hdl=cv2.VideoCapture(vid_path))
+    obj3 = ProbabilityDisplayer(panel, data=np.random.randint(0, 10, (wid.get_total_frames())))
     obj2 = VideoController(panel, video_player=wid)
 
+    obj2.Bind(wid.EVT_FRAME_CHANGE, lambda evt: obj3.set_location(evt.frame))
+
     sizer.Add(wid, 1, wx.EXPAND)
+    sizer.Add(obj3, 0, wx.EXPAND)
     sizer.Add(obj2, 0, wx.EXPAND)
 
     sizer.SetSizeHints(panel)
