@@ -3,14 +3,12 @@ from typing import Callable, Any, Optional
 import wx
 from wx.lib.newevent import NewCommandEvent
 import cv2
-import queue
 import threading
 from multiprocessing import Pipe
 from multiprocessing.connection import Connection
 from collections import deque
 import numpy as np
 
-# TODO: Random frame off by 1 when dragging slider
 
 class ControlDeque:
     """
@@ -101,7 +99,6 @@ class ControlDeque:
                 notify.notify()
                 self._num_push -= 1
                 return result
-
 
     def push_left_relaxed(self, value):
         """
@@ -202,6 +199,7 @@ def time_check(time_controller: Connection) -> Optional[int]:
 
     return value
 
+
 def video_loader(video_hdl: cv2.VideoCapture, frame_queue: ControlDeque, time_loc: Connection):
     """
     The core video loading function. Loads the video on a separate thread in the background for smooth performance.
@@ -217,26 +215,25 @@ def video_loader(video_hdl: cv2.VideoCapture, frame_queue: ControlDeque, time_lo
     if(video_file is None):
         return
 
+    valid_frame, frame = None, None
+
+    # In the code below, order of poll() check is CRITICAL!
     while(video_hdl.isOpened()):
-        # If a new time was sent through the pipe, set our time to that. Sending none through the pipe stops this
-        # process.
-        if(time_loc.poll()):
+        # Grab a frame if the current frame has been cleared....
+        if(frame is None):
+            valid_frame, frame = video_hdl.read()
+
+        # If this is not a valid frame(reached end of video), or the video player has sent a command, stop and get
+        # the command, and jump to the spot. Otherwise, immediately push another frame onto the queue.
+        if((not valid_frame) or (time_loc.poll())):
             new_loc = time_check(time_loc)
             if(new_loc is None):
                 return
             video_hdl.set(cv2.CAP_PROP_POS_MSEC, new_loc)
-
-        valid_frame, frame = video_hdl.read()
-
-        # If we are at the end of the video we pause execution waiting for a response from the user (to change the time)
-        if(not valid_frame):
-            new_loc = time_check(time_loc)
-            if(new_loc is None):
-                return
-            video_hdl.set(cv2.CAP_PROP_POS_MSEC, new_loc)
+            frame = None
         else:
-            # Otherwise we push the frame we just read...
             frame_queue.push_right_relaxed(frame)
+            frame = None
 
 
 class VideoPlayer(wx.Control):
@@ -285,7 +282,7 @@ class VideoPlayer(wx.Control):
         size = wx.Size(self._width, self._height)
         self.SetMinSize(size)
         self.SetInitialSize(size)
-        self.SetSize(size)
+        # self.SetSize(size)
 
         self._core_timer = wx.Timer(self)
 
@@ -409,7 +406,6 @@ class VideoPlayer(wx.Control):
         self.set_offset_frames(int(value / (1000 / self._fps)))
 
     def _full_jump(self, value: int):
-        print("Full Jump")
         current_state = self.is_playing()
         self._playing = False
 
@@ -436,7 +432,6 @@ class VideoPlayer(wx.Control):
 
 
     def _fast_back(self, amount: int):
-        print("Fast Back")
         current_state = self.is_playing()
         self._playing = False
 
@@ -458,10 +453,8 @@ class VideoPlayer(wx.Control):
         self._playing = current_state
         self.Refresh()
         self._core_timer.StartOnce(1000 / self._fps)
-        print("Fast Back Exit")
 
     def _fast_forward(self, amount: int):
-        print("Fast Forward")
         current_state = self.is_playing()
         self._playing = False
 
@@ -606,19 +599,21 @@ if(__name__ == "__main__"):
     wid = VideoPlayer(panel, video_hdl=cv2.VideoCapture(vid_path))
     obj2 = VideoController(panel, video_player=wid)
 
-    sizer.Add(wid, 0, wx.EXPAND)
+    sizer.Add(wid, 1, wx.EXPAND)
     sizer.Add(obj2, 0, wx.EXPAND)
 
     sizer.SetSizeHints(panel)
     panel.SetSizer(sizer)
 
-    wid_frame.Fit()
 
     wid_frame.Show(True)
+    # wid_frame.SetSize(wid_frame.GetBestSize())
+    wid_frame.Fit()
 
 
     def destroy(evt):
         global wid
+        wid.Destroy()
         del wid
         wid_frame.Destroy()
 
