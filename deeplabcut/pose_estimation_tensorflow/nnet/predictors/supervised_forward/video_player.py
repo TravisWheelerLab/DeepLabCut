@@ -233,6 +233,7 @@ def video_loader(video_hdl: cv2.VideoCapture, frame_queue: ControlDeque, time_lo
         if((not valid_frame) or (time_loc.poll())):
             new_loc = time_check(time_loc)
             if(new_loc is None):
+                video_hdl.release()
                 return
             video_hdl.set(cv2.CAP_PROP_POS_MSEC, new_loc)
             frame = None
@@ -276,7 +277,13 @@ class VideoPlayer(wx.Control):
         self._width = video_hdl.get(cv2.CAP_PROP_FRAME_WIDTH)
         self._height = video_hdl.get(cv2.CAP_PROP_FRAME_HEIGHT)
         self._fps = video_hdl.get(cv2.CAP_PROP_FPS)
-        self._num_frames = int(video_hdl.get(cv2.CAP_PROP_FRAME_COUNT))
+        try:
+            self._num_frames = int(video_hdl.get(cv2.CAP_PROP_FRAME_COUNT))
+
+            if (self._num_frames == 0):
+                self._num_frames = get_frame_count(video_hdl)
+        except:
+            self._num_frames = get_frame_count(video_hdl)
 
         # Useful indicator variables...
         self._playing = False
@@ -369,7 +376,6 @@ class VideoPlayer(wx.Control):
             # If we have reached the end of the video, pause the video and don't perform a frame update as
             # we will deadlock the system by waiting for a frame forever...
             if(self._current_loc >= (self._num_frames - 1)):
-                print(len(self._front_queue))
                 self.pause()
                 return
             # Get the next frame and set it as the current frame
@@ -530,7 +536,7 @@ class VideoController(wx.Panel):
     FRAME_BACK_SYMBOL = "\u21b6"
     FRAME_FORWARD_SYMBOL = "\u21b7"
 
-    def __init__(self,parent, w_id = wx.ID_ANY, video_player: VideoPlayer = None, pos = wx.DefaultPosition,
+    def __init__(self, parent, video_player: VideoPlayer, w_id = wx.ID_ANY, pos = wx.DefaultPosition,
                  size = wx.DefaultSize, style = wx.TAB_TRAVERSAL, name = "VideoController"):
         super().__init__(parent, w_id, pos, size, style, name)
 
@@ -594,8 +600,19 @@ class VideoController(wx.Panel):
             self._video_player.move_forward()
 
 
+def get_frame_count(video_hdl):
+    i = 0
+    while(video_hdl.isOpened() and video_hdl.grab()):
+        i += 1
+
+    video_hdl.set(cv2.CAP_PROP_POS_MSEC, 0)
+    return i
+
+
 if(__name__ == "__main__"):
     vid_path = "/home/isaac/Code/MultiTrackTest7-IsaacRobinson-2020-03-04/videos/TestVideos/V2cut.mp4"
+
+    print(get_frame_count(cv2.VideoCapture(vid_path)))
 
     app = wx.App()
     wid_frame = wx.Frame(None, title="Test...")
@@ -621,10 +638,8 @@ if(__name__ == "__main__"):
     # wid_frame.SetSize(wid_frame.GetBestSize())
     wid_frame.Fit()
 
-
     def destroy(evt):
         global wid
-        wid.Destroy()
         del wid
         wid_frame.Destroy()
 

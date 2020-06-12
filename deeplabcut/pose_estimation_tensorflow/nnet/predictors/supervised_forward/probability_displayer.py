@@ -7,24 +7,24 @@ class ProbabilityDisplayer(wx.Control):
     """
     A probability displayer...
     """
-    DEF_PROB_STEP = 10
+    MIN_PROB_STEP = 10
+    VISIBLE_PROBS = 100
     DEF_HEIGHT = 50
     TRIANGLE_SIZE = 7
     TOP_PADDING = 3
 
-    def __init__(self, parent, w_id=wx.ID_ANY, data: np.ndarray = None, height: int = DEF_HEIGHT,
-                 step: int = DEF_PROB_STEP, pos=wx.DefaultPosition, size=wx.DefaultSize, style=wx.BORDER_DEFAULT,
-                 validator=wx.DefaultValidator, name="ProbabilityDisplayer"):
+    def __init__(self, parent, data: np.ndarray = None, w_id=wx.ID_ANY, height: int = DEF_HEIGHT,
+                 visible_probs: int = VISIBLE_PROBS, pos=wx.DefaultPosition, size=wx.DefaultSize,
+                 style=wx.BORDER_DEFAULT, validator=wx.DefaultValidator, name="ProbabilityDisplayer"):
         super().__init__(parent, w_id, pos, size, style, validator, name)
 
-        print(data.shape)
         if((len(data.shape) != 1)):
             raise ValueError("Invalid data! Must be a numpy array of 1 dimension...")
 
         self._data = data / np.max(data)
-        self._tick_step = step
+        self._ticks_visible = visible_probs
 
-        size = wx.Size(step * 5, max(height, (self.TRIANGLE_SIZE * 4) + self.TOP_PADDING))
+        size = wx.Size(self.MIN_PROB_STEP * 5, max(height, (self.TRIANGLE_SIZE * 4) + self.TOP_PADDING))
         self.SetMinSize(size)
         self.SetInitialSize(size)
 
@@ -35,19 +35,22 @@ class ProbabilityDisplayer(wx.Control):
 
     def on_paint(self, event):
         painter = wx.BufferedPaintDC(self)
+        # Using a GCDC allows for much prettier aliased painting, making plot look nicer.
         painter = wx.GCDC(painter)
         self.on_draw(painter)
 
     def _compute_points(self, height: int, width: int, data: np.ndarray) -> Tuple[int, int, np.ndarray]:
+        tick_step = max(self.MIN_PROB_STEP, int(width / self._ticks_visible))
+
         center = (width // 2)
-        values_per_side = (center - 1) // self._tick_step
+        values_per_side = (center - 1) // tick_step
 
         low_val = max(self._current_index - values_per_side, 0)
         high_val = min(self._current_index + values_per_side + 1, len(data))
 
-        offset = center - ((self._current_index - low_val) * self._tick_step)
+        offset = center - ((self._current_index - low_val) * tick_step)
 
-        x = np.arange(0, high_val - low_val) * self._tick_step + offset
+        x = np.arange(0, high_val - low_val) * tick_step + offset
         y = data[low_val:high_val]
         y = (1 - y) * (height - ((self.TRIANGLE_SIZE * 2) + self.TOP_PADDING)) + self.TOP_PADDING
 
@@ -84,18 +87,17 @@ class ProbabilityDisplayer(wx.Control):
         # Compute the center and points to place on the line...
         center, current_idx, points = self._compute_points(height, width, self._data)
 
+        # Plot all of the points the filled-in polygon underneath, and the line connecting the points...
         wrap_polygon_points = np.array([[points[-1, 0], height], [points[0, 0], height]])
         dc.DrawPolygonList([np.concatenate((points, wrap_polygon_points))], transparent_pen, foreground_brush)
-
         dc.DrawLineList(np.transpose([points[:-1, 0], points[:-1, 1], points[1:, 0], points[1:, 1]]), foreground_pen)
-
         dc.DrawPointList(points, foreground_pen2)
 
+        # Draw the current location indicating line, point and arrow, indicates which data point we are currently on.
         dc.DrawLineList([[center, 0, center, height]], red_pen2)
         dc.DrawPolygonList([[[center - self.TRIANGLE_SIZE, height], [center + self.TRIANGLE_SIZE, height],
                         [center, height - int(self.TRIANGLE_SIZE * 1.5)]]], foreground_pen, foreground_brush2)
         dc.DrawPointList([points[current_idx]], red_pen)
-
 
 
     def set_location(self, location: int):

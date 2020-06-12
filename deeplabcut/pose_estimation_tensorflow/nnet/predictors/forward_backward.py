@@ -131,6 +131,35 @@ class SparseTrackingData:
         return new_sparse_data
 
 
+    def desparsify(self, orig_width: int, orig_height: int, orig_stride: int) -> Optional[TrackingData]:
+        """
+        Desparsifies this SparseTrackingData object.
+
+        :param orig_width: The original width of the tracking data object, will be the frame width of the newly
+                           constructed TrackingData object.
+        :param orig_height: The original height of the tracking data object, will be the frame height of the newly
+                           constructed TrackingData object.
+        :param orig_stride: The stride of the newly constructed tracking object (upscaling factor to scale to the size
+                            of the original video).
+
+        :return: A new TrackingData object, with data matching the original SparseTrackingData object. Returns None
+                 if this object has no data stored yet...
+        """
+        y, x, probs, x_off, y_off = self.unpack()
+
+        if(y is None):
+            return None
+
+        new_td = TrackingData.empty_tracking_data(1, 1, orig_width, orig_height, orig_stride)
+        new_td.set_offset_map(np.zeros((1, orig_height, orig_width, 1, 2), dtype=np.float32))
+
+        new_td.get_source_map()[0, y, x, 0] = probs
+        new_td.get_offset_map()[0, y, x, 0, 0] = x_off
+        new_td.get_offset_map()[0, y, x, 0, 1] = y_off
+
+        return new_td
+
+
     @classmethod
     def sparsify(cls, track_data: TrackingData, frame: int, bodypart: int, threshold: float) -> "SparseTrackingData":
         """
@@ -169,7 +198,8 @@ class ForwardBackward(Predictor):
     # The amount of side block increase for the normal distribution to increase by 1...
     ND_UNIT_PER_SIDE_COUNT = 10
 
-    def __init__(self, bodyparts: Union[List[str]], num_outputs: int, num_frames: int, settings: Union[Dict[str, Any], None], video_metadata: Dict[str, Any]):
+    def __init__(self, bodyparts: Union[List[str]], num_outputs: int, num_frames: int,
+                 settings: Union[Dict[str, Any], None], video_metadata: Optional[Dict[str, Any]]):
         """ Initialized a ForwardBackward plugin for analyzing a video """
         super().__init__(bodyparts, num_outputs, num_frames, settings, video_metadata)
 
@@ -212,7 +242,7 @@ class ForwardBackward(Predictor):
         self._edge_block_value = self.EDGE_PROB / (self.BLOCKS_PER_EDGE * 4)  # Probability value for every block...
 
         # More global variables, can also be set in dlc_config...
-        self.NEGATE_ON = settings["negate_overlapping_predictions"]  # Enables prior body part negation...
+        self.NEGATE_ON = bool(settings["negate_overlapping_predictions"])  # Enables prior body part negation...
         self.NEG_NORM_DIST_UNSCALED = settings["negative_impact_distance"]  # Normal distribution of negative 2D gaussian curve
         self.NEG_NORM_DIST = None  # To be computed below....
         self.NEG_AMPLITUDE = settings["negative_impact_factor"]  # Negative amplitude to use for 2D negation gaussian
@@ -627,23 +657,27 @@ class ForwardBackward(Predictor):
 
     def on_end(self, progress_bar: tqdm.tqdm) -> Union[None, Pose]:
         """ Handles backward part of viterbi, and then returns the poses """
-        progress_bar.reset(total=self._num_frames * (7 if(self.NEGATE_ON) else 3))
+        progress_bar.reset(total=self._num_frames * (7 if(self.NEGATE_ON) else 3) - (self.NEGATE_ON * 2))
         self._complete_posterior_probs(progress_bar)
-        return self._final_pass(progress_bar)
 
-
-    def _final_pass(self, progress_bar: Optional[tqdm.tqdm]) -> Pose:
         if(self.NEGATE_ON):
-            bp_queue = deque(maxlen=self._total_bp_count - 1)
-
-            for f_idx in range(self._num_frames):
-                for bp_idx in range(self._total_bp_count):
-                    self._compute_bp_neg_frame(bp_idx, f_idx, bp_queue)
-                if(progress_bar is not None):
-                    progress_bar.update(1)
-
+            self._bp_negation_pass(progress_bar)
             self._post_forward_backward(progress_bar, self._gaussian_values_at)
 
+        return self._get_maximums(progress_bar)
+
+
+    def _bp_negation_pass(self, progress_bar: Optional[tqdm.tqdm]):
+        bp_queue = deque(maxlen=self._total_bp_count - 1)
+
+        for f_idx in range(self._num_frames):
+            for bp_idx in range(self._total_bp_count):
+                self._compute_bp_neg_frame(bp_idx, f_idx, bp_queue)
+            if(progress_bar is not None):
+                progress_bar.update(1)
+
+
+    def _get_maximums(self, progress_bar: Optional[tqdm.tqdm]) -> Pose:
         # Our final pose object:
         poses = Pose.empty_pose(self._num_frames, self._total_bp_count)
 
@@ -738,11 +772,10 @@ class ForwardBackward(Predictor):
 
     @classmethod
     def get_tests(cls) -> Union[List[Callable[[], Tuple[bool, str, str]]], None]:
-        return [cls.test_plotting, cls.test_sparcification]
-
+        return [cls.test_plotting, cls.test_sparsification, cls.test_desparsification]
 
     @classmethod
-    def test_plotting(cls) -> Tuple[bool, str, str]:
+    def get_test_data(cls) -> TrackingData:
         # Make tracking data...
         track_data = TrackingData.empty_tracking_data(4, 1, 3, 3, 2)
 
@@ -759,13 +792,26 @@ class ForwardBackward(Predictor):
                                                   [1.0, 0, 0],
                                                   [0.0, 0, 0]]))
 
+        return track_data
+
+    @classmethod
+    def get_test_instance(cls, track_data: TrackingData) -> "ForwardBackward":
+        return cls(
+            [f"part{i + 1}" for i in range(track_data.get_bodypart_count())],
+            1,
+            track_data.get_frame_count(),
+            {name: val for name, desc, val in cls.get_settings()},
+            None
+        )
+
+    @classmethod
+    def test_plotting(cls) -> Tuple[bool, str, str]:
+        track_data = cls.get_test_data()
+        predictor = cls.get_test_instance(track_data)
+
         # Probabilities can change quite easily by even very minute changes to the algorithm, so we don't care about
         # them, just the predicted locations of things...
         expected_result = np.array([[3, 3], [3, 1], [1, 1], [1, 1]])
-
-        # Make the predictor...
-        predictor = cls(["part1"], 1, track_data.get_frame_count(),
-                        {name: val for name, desc, val in cls.get_settings()}, None)
 
         # Pass it data...
         predictor.on_frames(track_data)
@@ -780,28 +826,13 @@ class ForwardBackward(Predictor):
 
 
     @classmethod
-    def test_sparcification(cls) -> Tuple[bool, str, str]:
+    def test_sparsification(cls) -> Tuple[bool, str, str]:
         # Make tracking data...
-        track_data = [TrackingData.empty_tracking_data(1, 1, 3, 3, 2) for i in range(4)]
-
-        track_data[0].set_prob_table(0, 0, np.array([[0, 0, 0],
-                                                     [0, 1, 0],
-                                                     [0, 0, 0]]))
-        track_data[1].set_prob_table(0, 0, np.array([[0, 1.0, 0],
-                                                     [0, 0.5, 0],
-                                                     [0, 0.0, 0]]))
-        track_data[2].set_prob_table(0, 0, np.array([[1, 0.5, 0],
-                                                     [0, 0.0, 0],
-                                                     [0, 0.0, 0]]))
-        track_data[3].set_prob_table(0, 0, np.array([[0.5, 0, 0],
-                                                     [1.0, 0, 0],
-                                                     [0.0, 0, 0]]))
-
-        predictor = cls(["part1"], 1, 4, {name: val for name, desc, val in cls.get_settings()}, None)
+        track_data = cls.get_test_data()
+        predictor = cls.get_test_instance(track_data)
 
         # Pass it data...
-        for data in track_data:
-            predictor.on_frames(data)
+        predictor.on_frames(track_data)
 
         # Check output
         predictor.on_end(tqdm.tqdm(total=4))
@@ -812,6 +843,17 @@ class ForwardBackward(Predictor):
         else:
             return (True, str((predictor._frame_probs, predictor._sparse_data)), "No None Entries...")
 
+    @classmethod
+    def test_desparsification(cls):
+        # Make tracking data...
+        track_data = cls.get_test_data()
+        orig_frame = track_data.get_prob_table(0, 0)
+        result_frame = (
+                SparseTrackingData.sparsify(track_data, 0, 0, 0.001)
+                .desparsify(orig_frame.shape[1], orig_frame.shape[0], 8).get_prob_table(0, 0)
+        )
+
+        return (np.allclose(result_frame, orig_frame), str(orig_frame) + "\n", str(result_frame) + "\n")
 
     @classmethod
     def supports_multi_output(cls) -> bool:
