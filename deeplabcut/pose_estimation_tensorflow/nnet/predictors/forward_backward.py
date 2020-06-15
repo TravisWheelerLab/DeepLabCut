@@ -1,7 +1,8 @@
 # For types in methods
-from typing import Union, List, Tuple, Any, Dict, Callable, Optional, Sequence
+from typing import Union, List, Tuple, Any, Dict, Callable, Optional
 from numpy import ndarray
 import tqdm
+import copy
 
 # Plugin base class
 from deeplabcut.pose_estimation_tensorflow.nnet.processing import Predictor
@@ -611,7 +612,7 @@ class ForwardBackward(Predictor):
     def _post_forward_backward(self, progress_bar: Optional[tqdm.tqdm],
                                trans_func: Callable[[ndarray, ndarray, ndarray, ndarray], ndarray],
                                pre_func: Optional[Callable[[int, int], None]] = None):
-        orig_frames = self._frame_probs
+        orig_frames = copy.copy(self._frame_probs)
         orig_edges = np.copy(self._edge_vals)
 
         # Run forward on data currently stored in "_frame_probs" and "_edge_vals"
@@ -625,7 +626,7 @@ class ForwardBackward(Predictor):
                 progress_bar.update(1)
 
         # Copy in original data again
-        f_frames = self._frame_probs
+        f_frames = copy.copy(self._frame_probs)
         f_edges = np.copy(self._edge_vals)
         self._frame_probs = orig_frames
         self._edge_vals = orig_edges
@@ -664,7 +665,7 @@ class ForwardBackward(Predictor):
             self._bp_negation_pass(progress_bar)
             self._post_forward_backward(progress_bar, self._gaussian_values_at)
 
-        return self._get_maximums(progress_bar)
+        return self._get_maximums(progress_bar)[0]
 
 
     def _bp_negation_pass(self, progress_bar: Optional[tqdm.tqdm]):
@@ -677,15 +678,22 @@ class ForwardBackward(Predictor):
                 progress_bar.update(1)
 
 
-    def _get_maximums(self, progress_bar: Optional[tqdm.tqdm]) -> Pose:
+    def _get_maximums(self, progress_bar: Optional[tqdm.tqdm], include_indexes: bool = False) -> Tuple[Pose, Optional[ndarray]]:
         # Our final pose object:
         poses = Pose.empty_pose(self._num_frames, self._total_bp_count)
+
+        if(include_indexes):
+            indexes = np.zeros((self._num_frames, self._total_bp_count, 2), dtype=np.uint32)
+        else:
+            indexes = None
 
         # We now do maximum selection, same as doing back tracing without transitions.
         for f_idx in range(self._num_frames):
             for bp_idx in range(self._total_bp_count):
                 if(self._frame_probs[f_idx][bp_idx] is None):
                     poses.set_at(f_idx, bp_idx, (0, 0), (-4, -4), 0, 8)
+                    if(include_indexes):
+                        indexes[f_idx, bp_idx, :] = 2, 0
                 else:
                     # Get the max location in the frame....
                     y_coords, x_coords, __, x_offsets, y_offsets = self._sparse_data[f_idx][bp_idx].unpack()
@@ -698,18 +706,24 @@ class ForwardBackward(Predictor):
 
                     if(m_edge_prob > m_p):
                         poses.set_at(f_idx, bp_idx, (0, 0), (-4, -4), 0, 8)
+                        if(include_indexes):
+                            indexes[f_idx, bp_idx, :] = 1, max_edge_loc
                     else:
                         poses.set_at(f_idx, bp_idx, (m_x, m_y), (m_offx, m_offy), m_p, self._down_scaling)
+                        if(include_indexes):
+                            indexes[f_idx, bp_idx, :] = 0, max_loc
 
             if(progress_bar is not None):
                 progress_bar.update(1)
 
-        return poses
+        return poses, indexes
 
     def _complete_posterior_probs(self, progress_bar: Optional[tqdm.tqdm]):
         # Make variable pointing to Forward results so we don't lose them.
         forward_frames = self._frame_probs
         forward_edges = np.copy(self._edge_vals)
+        self._frame_probs = [None] * self._num_frames
+        self._edge_vals[:, :, :] = 0
         # Currently equals num_frames, need to move it down one before we enter the loop below which does array access.
         self._current_frame -= 1
 
@@ -746,7 +760,7 @@ class ForwardBackward(Predictor):
     def get_settings(cls) -> Union[List[Tuple[str, str, Any]], None]:
         return [
             ("norm_dist", "The normal distribution of the 2D gaussian curve used"
-                          "for transition probabilities by the viterbi algorithm.", 1),
+                          "for transition probabilities by the viterbi algorithm.", 1.5),
             ("amplitude", "The amplitude of the gaussian curve used by the viterbi algorithm.", 1),
             ("lowest_gaussian_value", "The lowest value of the gaussian curve used by the viterbi algorithm."
                                       "Really a constant that is added on the the 2D gaussian to give all points"

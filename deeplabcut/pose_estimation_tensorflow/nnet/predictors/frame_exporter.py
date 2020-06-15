@@ -33,7 +33,7 @@ class FrameExporter(Predictor):
         # Making the output file...
         orig_h5_path = Path(video_metadata["h5-file-name"])
         vid_path = Path(video_metadata["orig-video-path"])
-        self._out_file: BinaryIO = (orig_h5_path.parent / (vid_path.name + "~DATA.dlcf")).open("wb")
+        self._out_file = (orig_h5_path.parent / (vid_path.name + "~DATA.dlcf")).open("wb")
         # Load in the settings....
         self.SPARSIFY = settings["sparsify"]
         self.THRESHOLD = settings["threshold"]

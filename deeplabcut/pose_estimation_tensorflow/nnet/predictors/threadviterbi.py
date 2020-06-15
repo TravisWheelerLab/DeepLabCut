@@ -24,7 +24,7 @@ class Viterbi(Predictor):
     """
 
     def __init__(self, bodyparts: List[str], num_outputs: int, num_frames: int, settings: Dict[str, Any], vid_meta):
-        super().__init__(bodyparts, num_frames, settings)
+        super().__init__(bodyparts, num_frames, settings, vid_meta)
 
         # Store bodyparts and num_frames for later use, they become useful
         self._bodyparts = bodyparts
@@ -62,7 +62,6 @@ class Viterbi(Predictor):
         :param y: The current frame's y point
         :return: The location of x, y given gaussian curve centered at x_prior, y_prior
         """
-
         # Formula for 2D gaussian curve (or bump)
         inner_x_delta = ((prior_x - x) ** 2) / (2 * self.NORM_DIST ** 2)
         inner_y_delta = ((prior_y - y) ** 2) / (2 * self.NORM_DIST ** 2)
@@ -277,8 +276,8 @@ class Viterbi(Predictor):
         # Done, return the predicted poses...
         return poses
 
-    @staticmethod
-    def get_settings() -> Union[List[Tuple[str, str, Any]], None]:
+    @classmethod
+    def get_settings(cls) -> Union[List[Tuple[str, str, Any]], None]:
         return [
             ("norm_dist", "The normal distribution of the 2D gaussian curve used"
                           "for transition probabilities by the viterbi algorithm.", 5),
@@ -288,15 +287,9 @@ class Viterbi(Predictor):
                            "a minimum probability.", 0)
         ]
 
-    @staticmethod
-    def get_name() -> str:
+    @classmethod
+    def get_name(cls) -> str:
         return "viterbi"
-
-    @staticmethod
-    def get_description() -> str:
-        return ("A predictor that applies the Viterbi algorithm to frames in order to predict poses."
-                "The algorithm is frame-aware, unlike the default algorithm used by DeepLabCut, but"
-                "is also more memory intensive and computationally expensive.")
 
     @classmethod
     def get_tests(cls) -> Union[List[Callable[[], Tuple[bool, str, str]]], None]:

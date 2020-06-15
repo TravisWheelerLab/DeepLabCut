@@ -991,8 +991,8 @@ def AnalyzeVideo(
             range(nframes),
             save_as_csv,
         )
-    finally:
-        return DLCscorer
+
+    return DLCscorer
 
 
 def GetPosesofFrames(
@@ -1780,17 +1780,22 @@ def test_predictor_plugin(predictor_name = None, interactive = False):
 
         # If this test contains no test, let the user know and move to the next plugin.
         if(tests is None):
-            print(f"Plugin {predictor.get_name()} has no tests...")
+            print(f"Plugin {predictor.get_name()} has no tests...\n")
             print()
             continue
 
+        passed_tests = 0
+        total_tests = 0
+
         # Iterate tests printing there results...
         for test_meth in tests:
-            print(f"Running Test {test_meth.__name__}:")
+            print(f"Running Test '{test_meth.__name__}':")
             try:
                 passed, expected, actual = test_meth()
 
                 print(f"Results: {'Passed' if passed else 'Failed'}")
+                if(passed):
+                    passed_tests += 1
                 if(not passed):
                     print(f"Expected Results: {expected}")
                     print(f"Actual Results: {actual}")
@@ -1799,10 +1804,14 @@ def test_predictor_plugin(predictor_name = None, interactive = False):
                 print("Results: Failed With Exception")
                 traceback.print_exception(excep, excep, excep.__traceback__)
             finally:
+                total_tests += 1
                 print()
                 if(interactive):
                     input("Press Enter To Continue: ")
                     print()
+
+        passing_percent = 100 * (passed_tests / total_tests)
+        print(f"RESULTS: {passed_tests} out of {total_tests} passed, passing rate of {passing_percent:2.2f}%\n")
         print()
 
 if __name__ == "__main__":
