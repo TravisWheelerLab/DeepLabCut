@@ -13,7 +13,7 @@ class ProbabilityDisplayer(wx.Control):
     TRIANGLE_SIZE = 7
     TOP_PADDING = 3
 
-    def __init__(self, parent, data: np.ndarray = None, w_id=wx.ID_ANY, height: int = DEF_HEIGHT,
+    def __init__(self, parent, data: np.ndarray = None, text: str = None, w_id=wx.ID_ANY, height: int = DEF_HEIGHT,
                  visible_probs: int = VISIBLE_PROBS, pos=wx.DefaultPosition, size=wx.DefaultSize,
                  style=wx.BORDER_DEFAULT, validator=wx.DefaultValidator, name="ProbabilityDisplayer"):
         super().__init__(parent, w_id, pos, size, style, validator, name)
@@ -29,6 +29,8 @@ class ProbabilityDisplayer(wx.Control):
         self.SetInitialSize(size)
 
         self._current_index = 0
+
+        self._text = text
 
         self.Bind(wx.EVT_PAINT, self.on_paint)
         self.Bind(wx.EVT_ERASE_BACKGROUND, lambda evt: None)
@@ -99,6 +101,17 @@ class ProbabilityDisplayer(wx.Control):
                         [center, height - int(self.TRIANGLE_SIZE * 1.5)]]], foreground_pen, foreground_brush2)
         dc.DrawPointList([points[current_idx]], red_pen)
 
+        if(self._text is not None):
+            back_pen = wx.Pen(self.GetBackgroundColour(), 3, wx.PENSTYLE_SOLID)
+            back_brush = wx.Brush(self.GetBackgroundColour(), wx.BRUSHSTYLE_SOLID)
+            dc.SetTextBackground(self.GetBackgroundColour())
+            dc.SetTextForeground(self.GetForegroundColour())
+
+            dc.SetFont(self.GetFont())
+            size: wx.Size = dc.GetTextExtent(self._text)
+            width, height = size.GetWidth(), size.GetHeight()
+            dc.DrawRectangleList([(0, 0, width, height)], back_pen, back_brush)
+            dc.DrawText(self._text, 0, 0)
 
     def set_location(self, location: int):
         if(not (0 <= location < self._data.shape[0])):
@@ -112,4 +125,10 @@ class ProbabilityDisplayer(wx.Control):
     def set_data(self, data: np.ndarray):
         self._data[:] = data / np.max(data)
         self.Refresh()
+
+    def get_text(self) -> str:
+        return self._text
+
+    def set_text(self, value: str):
+        self._text = value
 

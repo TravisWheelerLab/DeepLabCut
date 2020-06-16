@@ -1,9 +1,9 @@
 from typing import Union, List, Callable, Tuple, Any, Dict, Optional
-from deeplabcut.pose_estimation_tensorflow.nnet.predictors.forward_backward import ForwardBackward
+from deeplabcut.pose_estimation_tensorflow.nnet.predictors.forward_backward import ForwardBackward, SparseTrackingData
 from deeplabcut.pose_estimation_tensorflow.nnet.predictors.supervised_forward.video_player import VideoPlayer, VideoController
 from deeplabcut.pose_estimation_tensorflow.nnet.predictors.supervised_forward.probability_displayer import ProbabilityDisplayer
+from deeplabcut.pose_estimation_tensorflow.nnet.predictors.supervised_forward.scroll_image_list import ScrollImageList
 import wx
-from wx.lib.statbmp import GenStaticBitmap
 import cv2
 import numpy as np
 import tqdm
@@ -45,7 +45,7 @@ class SupervisedForwardBackward(ForwardBackward):
 
         app = wx.App()
 
-        self._fb_editor = FBEditor(None, self._video_hdl, probs)
+        self._fb_editor = FBEditor(None, self._video_hdl, probs, self._get_names())
 
         self._fb_editor.plot_button.Bind(wx.EVT_BUTTON, self._make_plots)
 
@@ -55,25 +55,58 @@ class SupervisedForwardBackward(ForwardBackward):
 
         return poses
 
+    def _get_names(self):
+        return [self._bp_names[bp_idx // self._num_outputs] + str((bp_idx % self._num_outputs) + 1)
+                for bp_idx in range(self._total_bp_count)]
+
     def _make_plots(self, evt):
         frame_idx = self._fb_editor.video_player.get_offset_count()
-        for bp_idx, plot_img in zip(range(self._total_bp_count), self._fb_editor.plot_images):
-            figure = plt.figure(figsize=(1.5, 1.15), dpi=100)
+
+        new_bitmap_list = []
+
+        for bp_idx in range(self._total_bp_count):
+            bp_name = self._bp_names[bp_idx // self._num_outputs] + str((bp_idx % self._num_outputs) + 1)
+            figure = plt.figure(figsize=(3.6, 2.8), dpi=100)
             axes = figure.gca()
 
             frames, edges = self._frame_probs[frame_idx][bp_idx], self._edge_vals[frame_idx, bp_idx]
+
+            if(frames is None):
+                continue
+
             all_values = np.concatenate((frames, edges))
-            axes.set_title(self._bp_names[bp_idx // self._num_outputs] + str((bp_idx % self._num_outputs) + 1))
-            axes.hist(all_values, bins=10)
+            axes.set_title(bp_name)
+            axes.hist(all_values, bins=np.arange(11) / 10)
 
             plt.tight_layout()
             figure.canvas.draw()
 
             w, h = figure.canvas.get_width_height()
-            new_bitmap = wx.Bitmap.FromBufferRGBA(w, h, figure.canvas.buffer_rgba())
+            new_bitmap_list.append(wx.Bitmap.FromBufferRGBA(w, h, figure.canvas.buffer_rgba()))
+            axes.cla()
+            figure.clf()
+            plt.close(figure)
 
-            plot_img.SetBitmap(new_bitmap)
-            plot_img.Refresh()
+            figure = plt.figure(figsize=(3.6, 2.8), dpi=100)
+            axes = figure.gca()
+            axes.set_title(bp_name)
+            data = self._sparse_data[frame_idx][bp_idx].unpack()
+            track_data = SparseTrackingData()
+            track_data.pack(*data[:2], frames, *data[3:])
+            h, w = self._gaussian_table.shape
+            track_data = track_data.desparsify(w - 2, h - 2, 8)
+            axes.pcolormesh(track_data.get_prob_table(0, 0))
+            axes.set_ylim(axes.get_ylim()[::-1])
+            plt.tight_layout()
+            figure.canvas.draw()
+
+            w, h = figure.canvas.get_width_height()
+            new_bitmap_list.append(wx.Bitmap.FromBufferRGBA(w, h, figure.canvas.buffer_rgba()))
+            axes.cla()
+            figure.clf()
+            plt.close(figure)
+
+        self._fb_editor.plot_list.set_bitmaps(new_bitmap_list)
 
     @classmethod
     def get_settings(cls) -> Union[List[Tuple[str, str, Any]], None]:
@@ -93,9 +126,9 @@ class SupervisedForwardBackward(ForwardBackward):
 
 
 class FBEditor(wx.Frame):
-    def __init__(self, parent, video_hdl: cv2.VideoCapture, data: np.ndarray, id=wx.ID_ANY, title="",
-                 pos=wx.DefaultPosition, size=wx.DefaultSize, style=wx.DEFAULT_FRAME_STYLE, name="FBEditor"):
-        super().__init__(parent, id, title, pos, size, style, name)
+    def __init__(self, parent, video_hdl: cv2.VideoCapture, data: np.ndarray, names: List[str], w_id=wx.ID_ANY,
+                 title="", pos=wx.DefaultPosition, size=wx.DefaultSize, style=wx.DEFAULT_FRAME_STYLE, name="FBEditor"):
+        super().__init__(parent, w_id, title, pos, size, style, name)
 
         self._main_panel = wx.Panel(self)
         self._main_sizer = wx.BoxSizer(wx.VERTICAL)
@@ -108,14 +141,14 @@ class FBEditor(wx.Frame):
         self.video_player = VideoPlayer(self._main_panel, video_hdl=video_hdl)
         self.video_controls = VideoController(self._main_panel, video_player=self.video_player)
 
-        self.prob_displays = [ProbabilityDisplayer(self._main_panel, data=sub_data) for sub_data in data]
+        self.prob_displays = [ProbabilityDisplayer(self._main_panel, data=sub_data, text=name) for sub_data, name in zip(data, names)]
 
         self.plot_button = wx.Button(self._main_panel, label="Plot This Frame")
-        self.plot_images = [GenStaticBitmap(self._main_panel, wx.ID_ANY, bitmap=wx.Bitmap.FromRGBA(100, 100, 0, 0, 0, 0)) for __ in data]
+        plot_imgs = [wx.Bitmap.FromRGBA(100, 100, 0, 0, 0, 0) for __ in data]
+        self.plot_list = ScrollImageList(self._main_panel, plot_imgs, wx.VERTICAL, size=wx.Size(400, -1))
 
-        self._side_sizer.Add(self.plot_button)
-        for img in self.plot_images:
-            self._side_sizer.Add(img, 0, wx.EXPAND)
+        self._side_sizer.Add(self.plot_button, 0, wx.ALIGN_CENTER)
+        self._side_sizer.Add(self.plot_list, 1, wx.EXPAND)
 
         self._video_sizer.Add(self._side_sizer, 0, wx.EXPAND)
         self._video_sizer.Add(self.video_player, 1, wx.EXPAND)
