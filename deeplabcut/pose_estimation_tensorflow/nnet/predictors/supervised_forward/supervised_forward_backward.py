@@ -30,6 +30,7 @@ class SupervisedForwardBackward(ForwardBackward):
         self._fb_editor: Optional[FBEditor] = None
         self._bp_names = bodyparts
 
+        self._vid_meta = video_metadata
 
     def on_end(self, progress_bar: tqdm.tqdm) -> Union[None, Pose]:
         progress_bar.reset(total=self._num_frames * (7 if (self.NEGATE_ON) else 3) - (self.NEGATE_ON * 2))
