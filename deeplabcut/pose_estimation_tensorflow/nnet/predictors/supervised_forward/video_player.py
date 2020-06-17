@@ -2,7 +2,7 @@
 Module contains a wx video player widget and a wx video controller widget. Uses multi-threading to load frames to a
 deque while playing them, allowing for smoother playback...
 """
-from typing import Callable, Any, Optional
+from typing import Callable, Any, Optional, Tuple
 
 import wx
 from wx.lib.newevent import NewCommandEvent
@@ -312,8 +312,20 @@ class VideoPlayer(wx.Control):
         self.Bind(wx.EVT_PAINT, self.on_paint)
         self.Bind(wx.EVT_ERASE_BACKGROUND, lambda evt: None)
 
-    @staticmethod
-    def _resize_video(frame: np.ndarray, width: int, height: int) -> np.ndarray:
+    @classmethod
+    def _get_resize_dims(cls, frame: np.ndarray, width: int, height: int) -> Tuple[int, int]:
+        frame_aspect = frame.shape[0] / frame.shape[1]  # <-- Height / Width
+        passed_aspect = height / width
+
+        if(passed_aspect <= frame_aspect):
+            # Passed aspect has less height per unit width, so height is the limiting dimension
+            return (int(height / frame_aspect), height)
+        else:
+            # Otherwise the width is the limiting dimension
+            return (width, int(width * frame_aspect))
+
+    @classmethod
+    def _resize_video(cls, frame: np.ndarray, width: int, height: int) -> np.ndarray:
         """
         Private method. Resizes the passed frame to optimally fit into the specified width and height, while maintaining
         aspect ratio.
@@ -323,15 +335,7 @@ class VideoPlayer(wx.Control):
         :param height: The desired height of the resized frame.
         :return: A new numpy array, being the resized version of the frame.
         """
-        frame_aspect = frame.shape[0] / frame.shape[1]  # <-- Height / Width
-        passed_aspect = height / width
-
-        if(passed_aspect <= frame_aspect):
-            # Passed aspect has less height per unit width, so height is the limiting dimension
-            return cv2.resize(frame, (int(height / frame_aspect), height), interpolation=cv2.INTER_LINEAR)
-        else:
-            # Otherwise the width is the limiting dimension
-            return cv2.resize(frame, (width, int(width * frame_aspect)), interpolation=cv2.INTER_LINEAR)
+        return cv2.resize(frame, cls._get_resize_dims(frame, width, height), interpolation=cv2.INTER_LINEAR)
 
     def on_paint(self, event):
         """ Run on a paint event, redraws the widget. """

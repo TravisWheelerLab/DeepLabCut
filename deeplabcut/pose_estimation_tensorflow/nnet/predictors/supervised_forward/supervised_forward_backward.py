@@ -1,6 +1,7 @@
 from typing import Union, List, Callable, Tuple, Any, Dict, Optional
 from deeplabcut.pose_estimation_tensorflow.nnet.predictors.forward_backward import ForwardBackward, SparseTrackingData
-from deeplabcut.pose_estimation_tensorflow.nnet.predictors.supervised_forward.video_player import VideoPlayer, VideoController
+from deeplabcut.pose_estimation_tensorflow.nnet.predictors.supervised_forward.video_player import VideoController
+from deeplabcut.pose_estimation_tensorflow.nnet.predictors.supervised_forward.point_edit import PointViewNEdit
 from deeplabcut.pose_estimation_tensorflow.nnet.predictors.supervised_forward.probability_displayer import ProbabilityDisplayer
 from deeplabcut.pose_estimation_tensorflow.nnet.predictors.supervised_forward.scroll_image_list import ScrollImageList
 import wx
@@ -45,7 +46,7 @@ class SupervisedForwardBackward(ForwardBackward):
 
         app = wx.App()
 
-        self._fb_editor = FBEditor(None, self._video_hdl, probs, self._get_names())
+        self._fb_editor = FBEditor(None, self._video_hdl, probs, poses, self._get_names())
 
         self._fb_editor.plot_button.Bind(wx.EVT_BUTTON, self._make_plots)
 
@@ -89,12 +90,29 @@ class SupervisedForwardBackward(ForwardBackward):
 
             figure = plt.figure(figsize=(3.6, 2.8), dpi=100)
             axes = figure.gca()
-            axes.set_title(bp_name)
+            axes.set_title(bp_name + " Post Forward Backward")
             data = self._sparse_data[frame_idx][bp_idx].unpack()
             track_data = SparseTrackingData()
             track_data.pack(*data[:2], frames, *data[3:])
             h, w = self._gaussian_table.shape
             track_data = track_data.desparsify(w - 2, h - 2, 8)
+            axes.pcolormesh(track_data.get_prob_table(0, 0))
+            axes.set_ylim(axes.get_ylim()[::-1])
+            plt.tight_layout()
+            figure.canvas.draw()
+
+            w, h = figure.canvas.get_width_height()
+            new_bitmap_list.append(wx.Bitmap.FromBufferRGBA(w, h, figure.canvas.buffer_rgba()))
+            axes.cla()
+            figure.clf()
+            plt.close(figure)
+
+
+            figure = plt.figure(figsize=(3.6, 2.8), dpi=100)
+            axes = figure.gca()
+            axes.set_title(bp_name + " Original Source Frame")
+            h, w = self._gaussian_table.shape
+            track_data = self._sparse_data[frame_idx][bp_idx].desparsify(w - 2, h - 2, 8)
             axes.pcolormesh(track_data.get_prob_table(0, 0))
             axes.set_ylim(axes.get_ylim()[::-1])
             plt.tight_layout()
@@ -126,8 +144,9 @@ class SupervisedForwardBackward(ForwardBackward):
 
 
 class FBEditor(wx.Frame):
-    def __init__(self, parent, video_hdl: cv2.VideoCapture, data: np.ndarray, names: List[str], w_id=wx.ID_ANY,
-                 title="", pos=wx.DefaultPosition, size=wx.DefaultSize, style=wx.DEFAULT_FRAME_STYLE, name="FBEditor"):
+    def __init__(self, parent, video_hdl: cv2.VideoCapture, data: np.ndarray, poses: Pose, names: List[str],
+                 w_id=wx.ID_ANY, title="", pos=wx.DefaultPosition, size=wx.DefaultSize, style=wx.DEFAULT_FRAME_STYLE,
+                 name="FBEditor"):
         super().__init__(parent, w_id, title, pos, size, style, name)
 
         self._main_panel = wx.Panel(self)
@@ -138,7 +157,7 @@ class FBEditor(wx.Frame):
         self._video_sizer = wx.BoxSizer(wx.HORIZONTAL)
         self._side_sizer = wx.BoxSizer(wx.VERTICAL)
 
-        self.video_player = VideoPlayer(self._main_panel, video_hdl=video_hdl)
+        self.video_player = PointViewNEdit(self._main_panel, video_hdl=video_hdl, poses=poses)
         self.video_controls = VideoController(self._main_panel, video_player=self.video_player)
 
         self.prob_displays = [ProbabilityDisplayer(self._main_panel, data=sub_data, text=name) for sub_data, name in zip(data, names)]
@@ -161,8 +180,8 @@ class FBEditor(wx.Frame):
         self._main_panel.SetSizerAndFit(self._sub_sizer)
         self.SetSizerAndFit(self._main_sizer)
 
-        self.video_controls.Bind(VideoPlayer.EVT_FRAME_CHANGE, self._on_frame_chg)
+        self.video_controls.Bind(PointViewNEdit.EVT_FRAME_CHANGE, self._on_frame_chg)
 
-    def _on_frame_chg(self, evt: VideoPlayer.FrameChangeEvent):
+    def _on_frame_chg(self, evt: PointViewNEdit.FrameChangeEvent):
         for prob_disp in self.prob_displays:
             prob_disp.set_location(evt.frame)
