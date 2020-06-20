@@ -21,7 +21,8 @@ class ProbabilityDisplayer(wx.Control):
         if((len(data.shape) != 1)):
             raise ValueError("Invalid data! Must be a numpy array of 1 dimension...")
 
-        self._data = data / np.max(data)
+        self._data = np.copy(data)
+        self._max_data_point = np.max(self._data)
         self._ticks_visible = visible_probs
 
         size = wx.Size(self.MIN_PROB_STEP * 5, max(height, (self.TRIANGLE_SIZE * 4) + self.TOP_PADDING))
@@ -54,7 +55,7 @@ class ProbabilityDisplayer(wx.Control):
 
         x = np.arange(0, high_val - low_val) * tick_step + offset
         y = data[low_val:high_val]
-        y = (1 - y) * (height - ((self.TRIANGLE_SIZE * 2) + self.TOP_PADDING)) + self.TOP_PADDING
+        y = (1 - (y / self._max_data_point)) * (height - ((self.TRIANGLE_SIZE * 2) + self.TOP_PADDING)) + self.TOP_PADDING
 
         final_arr = np.zeros((len(x), 2), dtype=np.int32)
         final_arr[:, 0] = x
@@ -123,8 +124,17 @@ class ProbabilityDisplayer(wx.Control):
         return self._current_index
 
     def set_data(self, data: np.ndarray):
-        self._data[:] = data / np.max(data)
+        self._data[:] = data
+        self._max_data_point = np.max(self._data)
         self.Refresh()
+
+    def set_data_at(self, frame: int, value: float):
+        self._data[frame] = value
+        self._max_data_point = max(self._max_data_point, value)
+        self.Refresh()
+
+    def get_data_at(self, frame: int) -> float:
+        return self._data[frame]
 
     def get_text(self) -> str:
         return self._text

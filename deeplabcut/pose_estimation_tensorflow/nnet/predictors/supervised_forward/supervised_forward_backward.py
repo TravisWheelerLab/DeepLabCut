@@ -1,7 +1,7 @@
 from typing import Union, List, Callable, Tuple, Any, Dict, Optional
 from deeplabcut.pose_estimation_tensorflow.nnet.predictors.forward_backward import ForwardBackward, SparseTrackingData
 from deeplabcut.pose_estimation_tensorflow.nnet.predictors.supervised_forward.video_player import VideoController
-from deeplabcut.pose_estimation_tensorflow.nnet.predictors.supervised_forward.point_edit import PointViewNEdit
+from deeplabcut.pose_estimation_tensorflow.nnet.predictors.supervised_forward.point_edit import PointEditor, PointViewNEdit
 from deeplabcut.pose_estimation_tensorflow.nnet.predictors.supervised_forward.probability_displayer import ProbabilityDisplayer
 from deeplabcut.pose_estimation_tensorflow.nnet.predictors.supervised_forward.scroll_image_list import ScrollImageList
 import wx
@@ -158,8 +158,8 @@ class FBEditor(wx.Frame):
         self._video_sizer = wx.BoxSizer(wx.HORIZONTAL)
         self._side_sizer = wx.BoxSizer(wx.VERTICAL)
 
-        self.video_player = PointViewNEdit(self._main_panel, video_hdl=video_hdl, poses=poses)
-        self.video_controls = VideoController(self._main_panel, video_player=self.video_player)
+        self.video_player = PointEditor(self._main_panel, video_hdl=video_hdl, poses=poses, bp_names=names)
+        self.video_controls = VideoController(self._main_panel, video_player=self.video_player.video_viewer)
 
         self.prob_displays = [ProbabilityDisplayer(self._main_panel, data=sub_data, text=name) for sub_data, name in zip(data, names)]
 

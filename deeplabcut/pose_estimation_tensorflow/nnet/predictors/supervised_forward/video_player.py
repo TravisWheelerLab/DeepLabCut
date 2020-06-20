@@ -288,6 +288,7 @@ class VideoPlayer(wx.Control):
         # Useful indicator variables...
         self._playing = False
         self._current_frame = None
+        self._frozen = False
 
         self._front_queue = ControlDeque(self.BUFFER_SIZE)
         self._back_queue = deque(maxlen=self.BACK_LOAD_AMT)
@@ -323,6 +324,11 @@ class VideoPlayer(wx.Control):
         else:
             # Otherwise the width is the limiting dimension
             return (width, int(width * frame_aspect))
+
+    @classmethod
+    def _get_video_bbox(cls, frame: np.ndarray, width: int, height: int) -> Tuple[int, int, int, int]:
+        v_w, v_h = cls._get_resize_dims(frame, width, height)
+        return ((width - v_w) // 2, (height - v_h) // 2, v_w, v_h)
 
     @classmethod
     def _resize_video(cls, frame: np.ndarray, width: int, height: int) -> np.ndarray:
@@ -377,6 +383,10 @@ class VideoPlayer(wx.Control):
 
     def on_timer(self, event):
         if(self._playing):
+
+            if(self._frozen):
+                self.pause()
+                return
             # If we have reached the end of the video, pause the video and don't perform a frame update as
             # we will deadlock the system by waiting for a frame forever...
             if(self._current_loc >= (self._num_frames - 1)):
@@ -407,8 +417,19 @@ class VideoPlayer(wx.Control):
         self._playing = False
         wx.PostEvent(self, self.PlayStateChangeEvent(id=self.Id, playing=False, stop_triggered = False))
 
-    def is_playing(self):
+    def is_playing(self) -> bool:
         return self._playing
+
+    def freeze(self):
+        self.pause()
+        self._frozen = True
+
+    def unfreeze(self):
+        self.pause()
+        self._frozen = False
+
+    def is_frozen(self) -> bool:
+        return self._frozen
 
     def get_offset_millis(self):
         return self._frame_index_to_millis(self._current_loc)
@@ -423,6 +444,9 @@ class VideoPlayer(wx.Control):
         self.set_offset_frames(int(value / (1000 / self._fps)))
 
     def _full_jump(self, value: int):
+        if(self._frozen):
+            return
+
         current_state = self.is_playing()
         self._playing = False
 
@@ -449,6 +473,9 @@ class VideoPlayer(wx.Control):
 
 
     def _fast_back(self, amount: int):
+        if(self._frozen):
+            return
+
         current_state = self.is_playing()
         self._playing = False
 
@@ -472,6 +499,9 @@ class VideoPlayer(wx.Control):
         self._core_timer.StartOnce(1000 / self._fps)
 
     def _fast_forward(self, amount: int):
+        if(self._frozen):
+            return
+
         current_state = self.is_playing()
         self._playing = False
 
