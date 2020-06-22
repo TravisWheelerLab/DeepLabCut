@@ -485,7 +485,7 @@ class Pose:
         """
         self._data[:, 2::3] = probs
 
-    def set_x_at(self, frame: Union[int, slice], bodypart: Union[int, slice], values: ndarray):
+    def set_x_at(self, frame: Union[int, slice], bodypart: Union[int, slice], values: Union[float, ndarray]):
         """
         Set the x video coordinates for specific body parts or frames.
 
@@ -495,7 +495,7 @@ class Pose:
         """
         self._data[frame, self._fix_index(bodypart, 0)] = values
 
-    def set_y_at(self, frame: Union[int, slice], bodypart: Union[int, slice], values: ndarray):
+    def set_y_at(self, frame: Union[int, slice], bodypart: Union[int, slice], values: Union[float, ndarray]):
         """
         Set the y video coordinates for specific body parts or frames.
 
@@ -505,7 +505,7 @@ class Pose:
         """
         self._data[frame, self._fix_index(bodypart, 1)] = values
 
-    def set_prob_at(self, frame: Union[int, slice], bodypart: Union[int, slice], values: ndarray):
+    def set_prob_at(self, frame: Union[int, slice], bodypart: Union[int, slice], values: Union[float, ndarray]):
         """
         Set the probability values for specific body parts or frames.
 

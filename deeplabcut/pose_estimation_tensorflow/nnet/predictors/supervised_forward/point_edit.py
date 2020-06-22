@@ -1,10 +1,11 @@
-from typing import Tuple, List
+from typing import Tuple, List, Optional, Union
 
 import wx
 from deeplabcut.pose_estimation_tensorflow.nnet.processing import Pose
 from deeplabcut.pose_estimation_tensorflow.nnet.predictors.supervised_forward.video_player import VideoPlayer
 import cv2
 import matplotlib.pyplot as plt
+from matplotlib.colors import Colormap
 from wx.lib.newevent import NewCommandEvent
 
 def _bounded_float(low: float, high: float):
@@ -71,7 +72,7 @@ class PointViewNEdit(VideoPlayer, BasicDataFields):
         parent,
         video_hdl: cv2.VideoCapture,
         poses: Pose,
-        colormap: str = DEF_MAP,
+        colormap: Union[str, Colormap] = DEF_MAP,
         plot_threshold: float = 0.1,
         point_radius: int = 5,
         point_alpha: float = 0.7,
@@ -135,7 +136,7 @@ class PointViewNEdit(VideoPlayer, BasicDataFields):
         x = self._poses.get_x_at(self.get_offset_count(), self._edit_point)
         y = self._poses.get_y_at(self.get_offset_count(), self._edit_point)
         prob = self._poses.get_prob_at(self.get_offset_count(), self._edit_point)
-        return x, y, prob
+        return float(x), float(y), float(prob)
 
     def _set_selected_bodypart(self, x: float, y: float, probability: float):
         self._poses.set_x_at(self.get_offset_count(), self._edit_point, x)
@@ -206,13 +207,161 @@ class PointViewNEdit(VideoPlayer, BasicDataFields):
             self.unfreeze()
             self.Refresh()
 
-    def get_selected_body_part(self) -> int:
+    def get_selected_body_part(self) -> Optional[int]:
         return self._edit_point
 
-    def set_selected_bodypart(self, value: int):
+    def set_selected_bodypart(self, value: Optional[int]):
+        if(value is None):
+            self._edit_point = None
+            return
         if(not (0 <= value <= self._poses.get_bodypart_count())):
             raise ValueError("Selected Body part not within range!")
         self._edit_point = value
+
+
+class ColoredCircle(wx.Control):
+    def __init__(self, parent, color: wx.Colour, w_id = wx.ID_ANY, pos = wx.DefaultPosition,
+                 size = wx.DefaultSize, style=wx.BORDER_NONE, validator=wx.DefaultValidator, name = "ColoredCircle"):
+        super().__init__(parent, w_id, pos, size, style, validator, name)
+
+        self._color = color
+        self.SetInitialSize(size)
+        self.SetSize(size)
+
+        self.Bind(wx.EVT_ERASE_BACKGROUND, lambda evt: None)
+        self.Bind(wx.EVT_PAINT, self.on_paint)
+
+    def on_paint(self, event):
+        self.on_draw(wx.GCDC(wx.BufferedPaintDC(self)))
+
+    def on_draw(self, dc: wx.DC):
+        width, height = self.GetClientSize()
+
+        if((not width) or (not height)):
+            return
+
+        dc.SetBackground(wx.Brush(self.GetBackgroundColour(), wx.BRUSHSTYLE_SOLID))
+        dc.Clear()
+
+        dc.SetBrush(wx.Brush(self._color, wx.BRUSHSTYLE_SOLID))
+        dc.SetPen(wx.Pen(self._color, 1, wx.PENSTYLE_TRANSPARENT))
+
+        circle_radius = min(width, height) // 2
+        dc.DrawCircle(width // 2, height // 2, circle_radius)
+
+    def get_circle_color(self) -> wx.Colour:
+        return self._color
+
+    def set_circle_color(self, value: wx.Colour):
+        self._color = wx.Colour(value)
+
+
+class ColoredRadioButton(wx.Panel):
+
+    ColoredRadioEvent, EVT_COLORED_RADIO = NewCommandEvent()
+    PADDING = 10
+
+    def __init__(self, parent, button_idx: int, color: wx.Colour, label: str, w_id = wx.ID_ANY, pos = wx.DefaultPosition,
+                 size = wx.DefaultSize, style = wx.TAB_TRAVERSAL, name = "ColoredRadioButton"):
+        super().__init__(parent, w_id, pos, size, style, name)
+
+        self._index = button_idx
+
+        self._sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.radio_button = wx.CheckBox(self, label=label, style=wx.CHK_2STATE)
+        height = self.radio_button.GetBestSize().GetHeight()
+        self.circle = ColoredCircle(self, color, size=wx.Size(height, height))
+
+        self.radio_button.SetValue(False)
+
+        self._sizer.Add(self.circle, 0, wx.EXPAND, self.PADDING)
+        self._sizer.Add(self.radio_button, 1, wx.EXPAND, self.PADDING)
+
+        self.SetSizerAndFit(self._sizer)
+
+        self.SetInitialSize(size)
+
+        self.radio_button.Bind(wx.EVT_CHECKBOX, self._send_event)
+
+    def _send_event(self, event):
+        evt = self.ColoredRadioEvent(id=self.Id, button_id=self._index, label=self.radio_button.GetLabelText())
+        wx.PostEvent(self, evt)
+
+
+class ColoredRadioBox(wx.Panel):
+
+    ColoredRadioEvent, EVT_COLORED_RADIO = ColoredRadioButton.ColoredRadioEvent, ColoredRadioButton.EVT_COLORED_RADIO
+    PADDING = 20
+
+    def __init__(self, parent, colormap: Union[str, Colormap], labels: List[str], w_id = wx.ID_ANY,
+                 pos = wx.DefaultPosition, size = wx.DefaultSize, style = wx.TAB_TRAVERSAL | wx.BORDER_DEFAULT,
+                 name = "ColoredRadioBox"):
+        super().__init__(parent, w_id, pos, size, style, name)
+
+        self._main_sizer = wx.BoxSizer(wx.VERTICAL)
+        self._buttons = []
+        self._selected = None
+
+        self._colormap = plt.get_cmap(colormap)
+
+        for i, label in enumerate(labels):
+            color = self._colormap(i / len(labels), bytes=True)
+            wx_color = wx.Colour(*color)
+
+            radio_button =  ColoredRadioButton(self, i, wx_color, label)
+            radio_button.Bind(ColoredRadioButton.EVT_COLORED_RADIO, self._enforce_single_select)
+            self._main_sizer.Add(radio_button, 0, wx.EXPAND, self.PADDING)
+            self._buttons.append(radio_button)
+
+        self.SetSizerAndFit(self._main_sizer)
+
+    def _enforce_single_select(self, event: ColoredRadioButton.ColoredRadioEvent, post: bool = True):
+        # If we clicked on the already selected widget, toggle it off...
+        if(self._selected == event.button_id):
+            event.button_id = None
+
+        # Disable all radio buttons except for the one that was just toggled on.
+        for i, radio_button in enumerate(self._buttons):
+            radio_button.radio_button.SetValue(i == event.button_id)
+
+        self._selected = event.button_id
+
+        # Repost the event on this widget...
+        if(post):
+            wx.PostEvent(self, event)
+
+    def get_selected(self) -> Optional[int]:
+        return self._selected
+
+    def set_selected(self, value: int):
+        if(not (0 <= value < len(self._buttons)) and (value is not None)):
+            raise ValueError("Not a valid selection!!!!")
+        if(value is not None):
+            value = int(value)
+
+        new_evt = ColoredRadioButton.ColoredRadioEvent(button_id=value)
+        self._enforce_single_select(new_evt, False)
+
+    def get_labels(self) -> List[str]:
+        return [button.radio_button.GetLabel() for button in self._buttons]
+
+    def set_labels(self, value: List[str]):
+        if(len(self._buttons) != len(value)):
+            raise ValueError("Length of labels does not match the number of radio buttons!")
+
+        for button, label in zip(self._buttons, value):
+            button.SetLabel(label)
+
+    def get_colormap(self) -> Colormap:
+        return self._colormap
+
+    def set_colormap(self, value: Union[str, Colormap]):
+        self._colormap = plt.get_cmap(value)
+
+        for i, button in enumerate(self._buttons):
+            color = self._colormap(i / len(self._buttons), bytes=True)
+            wx_color = wx.Colour(*color)
+            button.circle.set_circle_color(wx_color)
 
 
 class PointEditor(wx.Panel):
@@ -240,21 +389,18 @@ class PointEditor(wx.Panel):
         self._main_sizer = wx.BoxSizer(wx.HORIZONTAL)
 
         self.video_viewer = PointViewNEdit(self, video_hdl, poses, colormap, plot_threshold, point_radius, point_alpha)
-        self.select_box = wx.RadioBox(self, label="Body Part", choices=bp_names, style=wx.RA_SPECIFY_ROWS)
+        self.select_box = ColoredRadioBox(self, colormap, bp_names)
 
         self._main_sizer.Add(self.video_viewer, 1, wx.EXPAND)
         self._main_sizer.Add(self.select_box, 0, wx.EXPAND)
 
         self.SetSizerAndFit(self._main_sizer)
 
-        self.select_box.Bind(wx.EVT_RADIOBOX, self.on_radio_change)
-        self.on_radio_change(None)
+        self.select_box.Bind(ColoredRadioBox.EVT_COLORED_RADIO, self.on_radio_change)
 
 
     def on_radio_change(self, event):
-        idx = self.select_box.GetSelection()
-
-        if(idx != wx.NOT_FOUND):
-            self.video_viewer.set_selected_bodypart(idx)
+        idx = event.button_id
+        self.video_viewer.set_selected_bodypart(idx)
 
 # class EditPointsControl()

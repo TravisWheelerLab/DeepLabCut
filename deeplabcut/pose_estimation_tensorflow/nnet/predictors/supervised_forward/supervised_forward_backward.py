@@ -62,7 +62,7 @@ class SupervisedForwardBackward(ForwardBackward):
                 for bp_idx in range(self._total_bp_count)]
 
     def _make_plots(self, evt):
-        frame_idx = self._fb_editor.video_player.get_offset_count()
+        frame_idx = self._fb_editor.video_player.video_viewer.get_offset_count()
 
         new_bitmap_list = []
 
@@ -153,32 +153,48 @@ class FBEditor(wx.Frame):
         self._main_panel = wx.Panel(self)
         self._main_sizer = wx.BoxSizer(wx.VERTICAL)
         self._main_sizer.Add(self._main_panel, 1, wx.EXPAND)
+        self._splitter_sizer = wx.BoxSizer(wx.VERTICAL)
 
+        self._main_splitter = wx.SplitterWindow(self._main_panel)
         self._sub_sizer = wx.BoxSizer(wx.VERTICAL)
-        self._video_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self._video_splitter = wx.SplitterWindow(self._main_splitter)
         self._side_sizer = wx.BoxSizer(wx.VERTICAL)
+        self._sub_panel = wx.Panel(self._main_splitter)
 
-        self.video_player = PointEditor(self._main_panel, video_hdl=video_hdl, poses=poses, bp_names=names)
-        self.video_controls = VideoController(self._main_panel, video_player=self.video_player.video_viewer)
+        # Splitter specific settings...
+        self._video_splitter.SetSashGravity(0.0)
+        self._video_splitter.SetMinimumPaneSize(20)
+        self._main_splitter.SetSashGravity(1.0)
+        self._main_splitter.SetMinimumPaneSize(20)
 
-        self.prob_displays = [ProbabilityDisplayer(self._main_panel, data=sub_data, text=name) for sub_data, name in zip(data, names)]
+        self.video_player = PointEditor(self._video_splitter, video_hdl=video_hdl, poses=poses, bp_names=names)
+        self.video_controls = VideoController(self._sub_panel, video_player=self.video_player.video_viewer)
 
-        self.plot_button = wx.Button(self._main_panel, label="Plot This Frame")
+        self.prob_displays = [ProbabilityDisplayer(self._sub_panel, data=sub_data, text=name) for sub_data, name in
+                              zip(data, names)]
+
+        self._plot_panel = wx.Panel(self._video_splitter)
+
+        self.plot_button = wx.Button(self._plot_panel, label="Plot This Frame")
         plot_imgs = [wx.Bitmap.FromRGBA(100, 100, 0, 0, 0, 0) for __ in data]
-        self.plot_list = ScrollImageList(self._main_panel, plot_imgs, wx.VERTICAL, size=wx.Size(400, -1))
+        self.plot_list = ScrollImageList(self._plot_panel, plot_imgs, wx.VERTICAL, size=wx.Size(400, -1))
 
         self._side_sizer.Add(self.plot_button, 0, wx.ALIGN_CENTER)
         self._side_sizer.Add(self.plot_list, 1, wx.EXPAND)
+        self._plot_panel.SetSizerAndFit(self._side_sizer)
 
-        self._video_sizer.Add(self._side_sizer, 0, wx.EXPAND)
-        self._video_sizer.Add(self.video_player, 1, wx.EXPAND)
+        self._video_splitter.SplitVertically(self._plot_panel, self.video_player)
 
-        self._sub_sizer.Add(self._video_sizer, 1, wx.EXPAND)
         for prob_display in self.prob_displays:
             self._sub_sizer.Add(prob_display, 0, wx.EXPAND)
         self._sub_sizer.Add(self.video_controls, 0, wx.EXPAND)
 
-        self._main_panel.SetSizerAndFit(self._sub_sizer)
+        self._sub_panel.SetSizerAndFit(self._sub_sizer)
+
+        self._main_splitter.SplitHorizontally(self._video_splitter, self._sub_panel)
+        self._splitter_sizer.Add(self._main_splitter, 1, wx.EXPAND)
+
+        self._main_panel.SetSizerAndFit(self._splitter_sizer)
         self.SetSizerAndFit(self._main_sizer)
 
         self.video_controls.Bind(PointViewNEdit.EVT_FRAME_CHANGE, self._on_frame_chg)
