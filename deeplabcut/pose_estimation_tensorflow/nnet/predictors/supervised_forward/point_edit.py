@@ -7,6 +7,7 @@ import cv2
 import matplotlib.pyplot as plt
 from matplotlib.colors import Colormap
 from wx.lib.newevent import NewCommandEvent
+from wx.lib.scrolledpanel import ScrolledPanel
 
 def _bounded_float(low: float, high: float):
     def convert(value: float):
@@ -298,7 +299,10 @@ class ColoredRadioBox(wx.Panel):
                  name = "ColoredRadioBox"):
         super().__init__(parent, w_id, pos, size, style, name)
 
+        self._scroller = ScrolledPanel(self, style=wx.VSCROLL)
         self._main_sizer = wx.BoxSizer(wx.VERTICAL)
+
+        self._inner_sizer = wx.BoxSizer(wx.VERTICAL)
         self._buttons = []
         self._selected = None
 
@@ -308,12 +312,25 @@ class ColoredRadioBox(wx.Panel):
             color = self._colormap(i / len(labels), bytes=True)
             wx_color = wx.Colour(*color)
 
-            radio_button =  ColoredRadioButton(self, i, wx_color, label)
+            radio_button =  ColoredRadioButton(self._scroller, i, wx_color, label)
             radio_button.Bind(ColoredRadioButton.EVT_COLORED_RADIO, self._enforce_single_select)
-            self._main_sizer.Add(radio_button, 0, wx.EXPAND, self.PADDING)
+            self._inner_sizer.Add(radio_button, 0, wx.EXPAND, self.PADDING)
             self._buttons.append(radio_button)
 
+        self._scroller.SetSizerAndFit(self._inner_sizer)
+        self._scroller.SetMinSize(wx.Size(self._scroller.GetMinSize().GetWidth() + self.PADDING, -1))
+        self._scroller.SetAutoLayout(True)
+        self._scroller.SetupScrolling()
+        self._scroller.SendSizeEvent()
+
+        self._main_sizer.Add(self._scroller, 1, wx.EXPAND)
         self.SetSizerAndFit(self._main_sizer)
+
+    def _correct_sidebar_size(self, forward_now = True):
+        self._scroller.Fit()
+        self._scroller.SetMinSize(wx.Size(self._scroller.GetMinSize().GetWidth() + self.PADDING, -1))
+        if(forward_now):
+            self.SendSizeEvent()
 
     def _enforce_single_select(self, event: ColoredRadioButton.ColoredRadioEvent, post: bool = True):
         # If we clicked on the already selected widget, toggle it off...
@@ -351,6 +368,8 @@ class ColoredRadioBox(wx.Panel):
 
         for button, label in zip(self._buttons, value):
             button.SetLabel(label)
+
+        self._correct_sidebar_size()
 
     def get_colormap(self) -> Colormap:
         return self._colormap
