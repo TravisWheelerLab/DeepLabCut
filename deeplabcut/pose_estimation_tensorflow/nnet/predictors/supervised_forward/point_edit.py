@@ -102,6 +102,7 @@ class PointViewNEdit(VideoPlayer, BasicDataFields):
         self.Bind(wx.EVT_LEFT_DOWN, self.on_press)
         self.Bind(wx.EVT_MOTION, self.on_move)
         self.Bind(wx.EVT_LEFT_UP, self.on_release)
+        self.Bind(wx.EVT_RIGHT_UP, self.on_right_click)
 
     def on_draw(self, dc: wx.BufferedPaintDC):
         super().on_draw(dc)
@@ -149,9 +150,8 @@ class PointViewNEdit(VideoPlayer, BasicDataFields):
         if((not total_w) or (not total_h) or (self._current_frame is None)):
             return (None, None)
 
-        # orig_x, orig_y = self.GetScreenPosition().Get()
-        x = evt.GetX() # - orig_x
-        y = evt.GetY() # - orig_y
+        x = evt.GetX()
+        y = evt.GetY()
         # Now we need to translate into video coordinates...
         x_off, y_off, w, h = self._get_video_bbox(self._current_frame, total_w, total_h)
         v_h, v_w = self._current_frame.shape[:2]
@@ -207,6 +207,23 @@ class PointViewNEdit(VideoPlayer, BasicDataFields):
             self._pressed = False
             self.unfreeze()
             self.Refresh()
+
+    def on_right_click(self, event: wx.MouseEvent):
+        if(self.is_playing() or (self._edit_point is None)):
+            return
+        self.freeze()
+
+        self._old_location = self._get_selected_bodypart()
+        x, y = self._get_mouse_loc_video(event)
+
+        if(x is None):
+            return
+
+        self._set_selected_bodypart(0, 0, 0)
+        self._push_point_change_event((0, 0, 0), self._old_location)
+        self._old_location = None
+        self.unfreeze()
+        self.Refresh()
 
     def get_selected_body_part(self) -> Optional[int]:
         return self._edit_point

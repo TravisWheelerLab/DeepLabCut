@@ -75,7 +75,7 @@ class SupervisedForwardBackward(ForwardBackward):
 
             all_values = np.concatenate((frames, edges))
             axes.set_title(bp_name)
-            axes.hist(all_values, bins=np.arange(11) / 10)
+            axes.hist(all_values, bins=15)
 
             plt.tight_layout()
             figure.canvas.draw()

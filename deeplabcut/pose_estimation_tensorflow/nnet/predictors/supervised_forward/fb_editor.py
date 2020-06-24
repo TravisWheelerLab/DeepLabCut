@@ -1,13 +1,14 @@
 import wx
 import cv2
 import numpy as np
-from typing import List
+from typing import List, Any, Tuple, Optional, Sequence
 from deeplabcut.pose_estimation_tensorflow.nnet.predictors.supervised_forward.point_edit import PointEditor, PointViewNEdit
 from deeplabcut.pose_estimation_tensorflow.nnet.predictors.supervised_forward.probability_displayer import ProbabilityDisplayer
 from deeplabcut.pose_estimation_tensorflow.nnet.predictors.supervised_forward.scroll_image_list import ScrollImageList
 from deeplabcut.pose_estimation_tensorflow.nnet.processing import Pose
 from deeplabcut.pose_estimation_tensorflow.nnet.predictors.supervised_forward.video_player import VideoController
 from wx.lib.scrolledpanel import ScrolledPanel
+from collections import deque
 
 
 class FBEditor(wx.Frame):
@@ -63,6 +64,11 @@ class FBEditor(wx.Frame):
 
         self.video_controls.Bind(PointViewNEdit.EVT_FRAME_CHANGE, self._on_frame_chg)
 
+    def _build_toolbar(self):
+        toolbar: wx.ToolBar = self.GetToolBar()
+
+        # TODO: Need to actually make toolbar....
+
     def _on_frame_chg(self, evt: PointViewNEdit.FrameChangeEvent):
         for prob_disp in self.prob_displays:
             prob_disp.set_location(evt.frame)
@@ -70,6 +76,48 @@ class FBEditor(wx.Frame):
     @property
     def prob_displays(self):
         return self._prob_disp.displays
+
+
+class History:
+    # TODO: Docs!!!
+    class Element:
+        def __init__(self, name: str, value: Any):
+            self.name = name
+            self.value = value
+
+    def __init__(self, max_size: int = 100):
+        self.history = deque(maxlen=max_size)
+        self.future = deque(maxlen=max_size)
+
+    def do(self, name: str, value: Any):
+        self.future.clear()
+        self.history.append(self.Element(name, value))
+
+    def undo(self) -> Tuple[Optional[str], Optional[Any]]:
+        if(self.can_undo()):
+            result = self.history.pop()
+            self.future.appendleft(result)
+            return (result.name, result.value)
+        else:
+            return None, None
+
+    def redo(self) -> Tuple[Optional[str], Optional[Any]]:
+        if(self.can_redo()):
+            result = self.future.popleft()
+            self.history.append(result)
+            return (result.name, result.value)
+        else:
+            return None, None
+
+    def clear(self):
+        self.future.clear()
+        self.history.clear()
+
+    def can_undo(self) -> bool:
+        return (len(self.history) > 0)
+
+    def can_redo(self) -> bool:
+        return (len(self.future) > 0)
 
 
 class MultiProbabilityDisplay(wx.Panel):
@@ -101,4 +149,3 @@ class MultiProbabilityDisplay(wx.Panel):
             max(disp.GetMinSize().GetWidth() for disp in self.displays),
             sum(disp.GetMinSize().GetHeight() for disp in self.displays[:self.MAX_HEIGHT_IN_WIDGETS]))
         )
-
